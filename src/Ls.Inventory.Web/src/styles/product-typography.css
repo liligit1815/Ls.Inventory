@@ -1,0 +1,16 @@
+/* Shared product information contract. Explicit utilities override older page-specific sizing. */
+:root{--product-text-size:16px;--product-unit-size:17px;--product-text-color:#29465b}
+.product-typography{font-size:var(--product-text-size);font-weight:600;color:var(--product-text-color)}
+.el-table.product-typography{--el-table-border-color:#a9c4d6}
+.el-table.product-typography td.el-table__cell{padding:12px 0;border-bottom:2px solid #a9c4d6}
+.el-table.product-typography th.el-table__cell{font-size:16px;font-weight:800;color:#294a60;padding:13px 0;border-bottom:2px solid #8cacc3}
+.el-table.product-typography .cell{line-height:26px}
+.product-name,.product-name .cell,.product-name .el-input__inner{font-size:var(--product-text-size)!important;font-weight:700!important;color:var(--product-text-color)!important;line-height:1.6!important}
+.product-spec,.product-spec .cell,.product-spec .el-input__inner{font-size:var(--product-text-size)!important;font-weight:600!important;color:var(--product-text-color)!important;line-height:1.6!important}
+.product-note,.product-note .cell,.product-note .el-input__inner{font-size:var(--product-text-size)!important;font-weight:700!important;color:var(--product-text-color)!important;line-height:1.6!important}
+.product-unit,.product-unit .cell,.product-unit .el-input__inner{font-size:var(--product-unit-size)!important;font-weight:800!important;color:var(--product-text-color)!important;line-height:1.6!important;white-space:nowrap}
+.product-name.negative{color:#ba3d49!important}
+.product-picker .el-select__selected-item,.product-options .el-select-dropdown__item{font-size:var(--product-text-size);font-weight:600;color:var(--product-text-color)}
+.product-options .el-select-dropdown__item{line-height:26px}
+.product-note .el-textarea__inner{font-size:var(--product-text-size);font-weight:700;color:var(--product-text-color);line-height:1.6}
+.product-picker .el-tag__content{font-size:var(--product-text-size);font-weight:700;color:var(--product-text-color)}
