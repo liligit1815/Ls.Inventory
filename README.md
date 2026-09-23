@@ -7,7 +7,7 @@
 | 模块 | 内容 |
 | --- | --- |
 | 登录与安全 | JWT 身份验证、登录退出、首次改密、会话撤销、登录失败锁定 |
-| 工作台 | 商品模糊搜索、规格和备注展示、当前库存、确认或回车即时出入库、库存告急提醒 |
+| 工作台 | 近日出入库整合快捷录入：顶部或商品旁直接入库／出库，右侧面板自动带入商品、预览操作后库存，成功后刷新并可定位今天记录；提供日历／表格／每日汇总卡片三种视图（默认含今天的近 7 天，可自定义 1～367 天）；表格上方为日期、左侧为商品，日历和卡片采用统一高度的日期摘要，点击日期在下方查看每页8条商品明细，按单位汇总可展开查看，完整规格和备注可点击商品名称查看；支持多商品筛选、当前库存、即时出入库及库存告急提醒 |
 | 数据看板 | 日期及商品多选、指标卡、出入库趋势、库存状态环图、商品卡片与明细、历史流水 |
 | 盘库 | 账面库存快照、填写实盘数量、差异确认、取消、历史查看 |
 | 商品档案 | 名称、产品规格、原料规格、单位、编码、备注、启停用、Excel 商品及现有库存导入 |
@@ -66,7 +66,19 @@ dotnet user-secrets set 'BootstrapAdmin:Password' '<至少12位的初始登录�
 
 CMD 的英文脚本入口是为避免中文批处理编码问题保留的，不应只因存在中文脚本就删除。
 
-## Windows 生产部署
+## Windows 11 x64 · IIS 部署与升级
+
+从 [GitHub Releases](https://github.com/liligit1815/Ls.Inventory/releases) 下载 `LS.Inventory-0.2.0-win-x64.zip` 和对应 SHA-256 校验文件。仓库只维护源码、测试、配置示例和文档；编译后的部署包仅作为 Release 附件，不提交数据库、真实配置、日志或本机运行数据。
+
+本版本包含近日出入库的日历／表格／每日汇总卡片，日期按先后排列，商品明细分页展示；快捷出入库使用大按钮，桌面商品列表在面板左侧展开，可一次查看更多商品。页面统一使用右上角“刷新数据”。
+
+部署包的 `site/` 已包含前端、后端和 win-x64 独立运行时，适用于 Windows 11 专业版／企业版等具备完整 IIS 功能的版本。IIS 仍需安装 .NET 10 Hosting Bundle 以提供托管模块，并配置 PostgreSQL 和 HTTPS；不需要 Node.js、Git 或 SDK。
+
+旧版轻量版升级：先停站并备份数据库，使用包内 `tools/Prepare-Update.ps1` 将新版本放入新的目录，沿用旧 `appsettings.Production.json`、目录权限和 IIS 自定义配置，保留原目录；完成数据库增量检查后切换 IIS 物理路径。此版本未改变业务表结构，不重置账号或库存。工具不自动切换站点或修改数据库；不支持直接迁移其他系统或旧全量版结构。
+
+详细步骤见 [部署包说明（新装／旧版升级）](deploy/README-Windows.md)。
+
+### 从源码构建部署包
 
 请按 [Windows 生产环境安装部署指南](docs/Windows生产环境安装部署指南.md) 操作。目标电脑已安装 PostgreSQL 时不必重装，端口使用 5433，用户名和密码在目标机配置。
 
@@ -76,7 +88,7 @@ CMD 的英文脚本入口是为避免中文批处理编码问题保留的，不�
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-windows.ps1
 ```
 
-脚本还原前端依赖、执行前端测试、构建前端、发布后端，并把网页放入发布目录的 `wwwroot`。输出位于 `.artifacts/windows-时间-标识/`；发布物不包含生产密码。
+脚本还原前端依赖、执行前端测试、构建前端，并以 `win-x64 --self-contained true` 发布后端，生成 ZIP、文件清单、版本信息和 SHA-256 校验文件。输出位于 `.artifacts/windows-时间-标识/`；包内含升级工具和部署文档，不包含真实配置。开发服务正在运行且已按锁文件安装依赖时，可加 `-UseInstalledDependencies` 避免重新安装依赖。
 
 生产电脑只需要发布文件、IIS 和 .NET 10 Hosting Bundle，不需要 Node.js、Git 或开发用的 5173/5180 服务。生产配置必须使用 `Production` 和 HTTPS，不能用 `启动系统.cmd` 代替正式部署。
 
@@ -101,6 +113,7 @@ npm test
 npm run build
 cd ../..
 dotnet test Ls.Inventory.slnx -c Release --filter FullyQualifiedName~ApplicationSmokeTests
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows-update.ps1
 ```
 
 完整后端测试需要设置 `LS_TEST_ADMIN_CONNECTION` 环境变量，指向允许创建 schema 的专用开发／测试数据库，然后运行 `dotnet test Ls.Inventory.slnx -c Release`。测试创建随机命名的 `ls_lite_test_*` schema，结束后删除该测试结构；**不要指向生产数据库**。正在运行的开发程序占用 Debug 文件时，使用 Release 构建验证。

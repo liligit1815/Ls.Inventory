@@ -16,7 +16,11 @@
 
 Windows 家庭版不提供本指南要求的完整 IIS 部署方式。安装需本机管理员权限。新电脑不需要安装源码编译工具或 Node.js。不要把开发电脑的数据库测试数据自动迁入生产。
 
-## 二、在构建电脑生成发布文件
+## 二、下载或构建 Windows x64 部署包
+
+优先从 [GitHub Release](https://github.com/liligit1815/Ls.Inventory/releases) 下载 `LS.Inventory-0.2.0-win-x64.zip`，核对旁边的 SHA-256 校验文件后解压。包内 `README-Windows.md` 提供新版 IIS 安装与保留数据升级步骤；已有站点使用 `tools/Prepare-Update.ps1` 准备独立版本目录，不要直接覆盖旧站点。该包包含 win-x64 运行时，仍需 IIS Hosting Bundle 托管模块。
+
+以下是从源码自行构建的方法：
 
 1. 获取项目。若在正在开发的电脑打包，先用“停止系统.cmd”停止开发服务，或使用独立源码副本；否则 npm ci 可能因文件占用报 EPERM：
 
@@ -28,9 +32,9 @@ Windows 家庭版不提供本指南要求的完整 IIS 部署方式。安装需�
 
    没有配置 SSH 的电脑可改用 `https://github.com/liligit1815/Ls.Inventory.git` 克隆。
 
-2. 等待显示 `Publish directory`。发布目录位于 `.artifacts/windows-时间-标识/`。每次生成新目录，不覆盖生产文件。前端测试失败或构建失败时应停止部署。
-3. 将该目录中的**全部内容**复制至新电脑 `C:\LSInventory\site`。不要只复制 exe，也不要复制 node_modules、源码或旧配置。
-4. 发布目录应包含 `web.config`、`Ls.Inventory.Api.dll`、相关依赖、`wwwroot/index.html`、`wwwroot/assets/` 和 `Templates/商品信息及现有库存模板.xlsx`。
+2. 等待显示 `Package`。ZIP 和校验文件位于 `.artifacts/windows-时间-标识/`，实际网站文件在包内 `site/`。每次生成新目录，不覆盖生产文件。前端测试失败或构建失败时应停止部署。
+3. 将包内 `site/` 中的**全部内容**复制至新电脑 `C:\LSInventory\site`。不要只复制 exe，也不要复制 node_modules、源码或旧配置。
+4. 发布目录应包含 `web.config`、`Ls.Inventory.Api.exe`、`Ls.Inventory.Api.dll`、内置运行时及相关依赖、`wwwroot/index.html`、`wwwroot/assets/` 和 `Templates/商品信息及现有库存模板.xlsx`。
 
 发布包不包含生产配置或数据库数据。GitHub 源码不是可直接双击运行的安装程序。
 
@@ -59,7 +63,7 @@ CREATE SCHEMA IF NOT EXISTS lite;
 
 ## 五、填写生产配置
 
-1. 将源码的 `deploy/appsettings.Production.example.json` 复制到 `C:\LSInventory\site\appsettings.Production.json`。发布目录以外保存一份受保护的配置备份。
+1. 将部署包的 `config/appsettings.Production.example.json`（或源码的 `deploy/appsettings.Production.example.json`） 复制到 `C:\LSInventory\site\appsettings.Production.json`。发布目录以外保存一份受保护的配置备份。
 2. 修改以下值：
 
    | 配置 | 填写方法 |
@@ -92,10 +96,11 @@ CREATE SCHEMA IF NOT EXISTS lite;
 ```powershell
 Set-Location C:\LSInventory\site
 $env:ASPNETCORE_ENVIRONMENT = 'Production'
+$env:DOTNET_ENVIRONMENT = 'Production'
 $inventoryInitialPassword = Read-Host '输入至少12位的系统初始登录密码' -AsSecureString
 $env:BootstrapAdmin__Password = [System.Net.NetworkCredential]::new('', $inventoryInitialPassword).Password
 try {
-    dotnet .\Ls.Inventory.Api.dll --initialize-database
+    .\Ls.Inventory.Api.exe --initialize-database
     if ($LASTEXITCODE -ne 0) { throw '初始化失败，请检查配置与数据库，不要继续启动网站' }
 } finally {
     Remove-Item Env:\BootstrapAdmin__Password -ErrorAction SilentlyContinue
@@ -162,10 +167,11 @@ REVOKE UPDATE ON lite.movements, lite.audit_logs FROM ls_inventory_app;
 ```powershell
 Set-Location C:\LSInventory\site
 $env:ASPNETCORE_ENVIRONMENT = 'Production'
+$env:DOTNET_ENVIRONMENT = 'Production'
 $inventoryAdminConnection = Read-Host '输入同一项目库的完整结构管理连接字符串' -AsSecureString
 $env:ConnectionStrings__InventoryMigration = [System.Net.NetworkCredential]::new('', $inventoryAdminConnection).Password
 try {
-    dotnet .\Ls.Inventory.Api.dll --initialize-database
+    .\Ls.Inventory.Api.exe --initialize-database
     if ($LASTEXITCODE -ne 0) { throw '升级失败，不要启动新版本' }
 } finally {
     Remove-Item Env:\ConnectionStrings__InventoryMigration -ErrorAction SilentlyContinue

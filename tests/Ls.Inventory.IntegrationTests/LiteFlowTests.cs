@@ -4,12 +4,16 @@ using System.Text.Json;
 using Ls.Inventory.Api;
 using Ls.Inventory.Api.Data;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.RateLimiting;
 using Npgsql;
 using Xunit;
 
@@ -61,6 +65,14 @@ public sealed class LiteDatabaseFixture : IAsyncLifetime
             builder.UseSetting("DatabaseInitialization:Initialize", "false");
             builder.UseSetting("BootstrapAdmin:Password", "TestOwnerPass2026!");
             builder.UseSetting("Jwt:SigningKey", "Isolated-test-key-not-for-production-12345678901234");
+            builder.ConfigureServices(services => {
+                // Business tests share one test IP; their logins must not exhaust each other's quota.
+                services.RemoveAll<IConfigureOptions<RateLimiterOptions>>();
+                services.AddRateLimiter(options => options.AddFixedWindowLimiter("login", limiter => {
+                    limiter.PermitLimit = 1000;
+                    limiter.Window = TimeSpan.FromMinutes(1);
+                }));
+            });
         }
     }
 }

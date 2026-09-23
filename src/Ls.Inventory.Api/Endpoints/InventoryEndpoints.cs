@@ -8,6 +8,8 @@ public static class InventoryEndpoints
     {
         var g = app.MapGroup("/api/v1").RequireAuthorization();
         g.MapPost("/movements", PostMovement);
+        g.MapGet("/movements/daily", DailyMovements);
+        g.MapGet("/products/{productId:guid}/recent-movements", RecentMovements);
         g.MapGet("/movements", async (Guid? productId, int? page, HttpContext c, InventoryDbContext db) => {
             var q = db.Movements.AsNoTracking().Where(x => productId == null || x.ProductId == productId);
             var p = Math.Max(1, page ?? 1);
@@ -26,6 +28,63 @@ public static class InventoryEndpoints
             var items = await q.OrderByDescending(x => x.Id).Skip((Math.Max(1, page ?? 1) - 1) * 30).Take(30)
                 .Select(x => new { x.Id, x.OccurredAt, x.UserName, x.Action, x.IpAddress }).ToArrayAsync();
             return EndpointSupport.Ok(c, new { total, items });
+        });
+    }
+    private static async Task<IResult> DailyMovements(int? days, HttpContext c, InventoryDbContext db)
+    {
+        var rangeDays = days ?? 7;
+        if (rangeDays is < 1 or > 367)
+            throw new BusinessRuleException("INVALID_RANGE", "请输入 1～367 之间的整数天数");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(8));
+        var from = today.AddDays(1 - rangeDays);
+        var startUtc = new DateTimeOffset(from.ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUniversalTime();
+        var endUtc = new DateTimeOffset(today.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUniversalTime();
+        var groups = await db.Movements.AsNoTracking()
+            .Where(x => x.PostedAt >= startUtc && x.PostedAt < endUtc && (x.Kind == "Inbound" || x.Kind == "Outbound"))
+            .GroupBy(x => new { x.ProductId, Year = x.PostedAt.AddHours(8).Year, Month = x.PostedAt.AddHours(8).Month, Day = x.PostedAt.AddHours(8).Day })
+            .Select(g => new {
+                g.Key.ProductId, g.Key.Year, g.Key.Month, g.Key.Day,
+                inbound = g.Sum(x => x.Kind == "Inbound" ? (long)x.QuantityChange : 0),
+                outbound = -g.Sum(x => x.Kind == "Outbound" ? (long)x.QuantityChange : 0),
+                inboundCount = g.Count(x => x.Kind == "Inbound"), outboundCount = g.Count(x => x.Kind == "Outbound")
+            }).OrderBy(x => x.Year).ThenBy(x => x.Month).ThenBy(x => x.Day).ThenBy(x => x.ProductId).ToArrayAsync();
+        return EndpointSupport.Ok(c, new {
+            from, to = today, days = rangeDays,
+            entries = groups.Select(x => new { date = new DateOnly(x.Year, x.Month, x.Day), x.ProductId, x.inbound, x.outbound, x.inboundCount, x.outboundCount })
+        });
+    }
+    private static async Task<IResult> RecentMovements(Guid productId, int? days, int? page, HttpContext c, InventoryDbContext db)
+    {
+        var rangeDays = days ?? 7;
+        if (rangeDays is < 1 or > 367)
+            throw new BusinessRuleException("INVALID_RANGE", "请输入 1～367 之间的整数天数");
+        var p = page ?? 1;
+        if (p < 1 || p > int.MaxValue / 30)
+            throw new BusinessRuleException("INVALID_PAGE", "页码无效");
+        var today = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(8));
+        var from = today.AddDays(1 - rangeDays);
+        var startUtc = new DateTimeOffset(from.ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUniversalTime();
+        var endUtc = new DateTimeOffset(today.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUniversalTime();
+        await using var tx = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
+        if (!await db.Products.AnyAsync(x => x.Id == productId))
+            throw new BusinessRuleException("NOT_FOUND", "商品不存在", 404);
+        var q = db.Movements.AsNoTracking().Where(x => x.ProductId == productId
+            && x.PostedAt >= startUtc && x.PostedAt < endUtc && (x.Kind == "Inbound" || x.Kind == "Outbound"));
+        var totals = await q.GroupBy(x => x.Kind).Select(g => new {
+            kind = g.Key, count = g.Count(), quantity = g.Sum(x => (long)x.QuantityChange)
+        }).ToArrayAsync();
+        var inbound = totals.SingleOrDefault(x => x.kind == "Inbound");
+        var outbound = totals.SingleOrDefault(x => x.kind == "Outbound");
+        var items = await q.OrderByDescending(x => x.PostedAt).ThenByDescending(x => x.Id)
+            .Skip((p - 1) * 30).Take(30).Select(x => new {
+                x.Id, x.ProductId, productName = x.Product.Name, x.Product.Unit, x.Kind,
+                x.QuantityChange, x.QuantityAfter, x.Note, x.PostedAt, userName = x.User.DisplayName
+            }).ToArrayAsync();
+        await tx.CommitAsync();
+        return EndpointSupport.Ok(c, new {
+            from, to = today, days = rangeDays, total = totals.Sum(x => x.count), items,
+            inbound = inbound?.quantity ?? 0, outbound = -(outbound?.quantity ?? 0),
+            inboundCount = inbound?.count ?? 0, outboundCount = outbound?.count ?? 0
         });
     }
     public sealed record MovementRequest(Guid RequestId, Guid ProductId, string Kind, int Quantity, string? Note);

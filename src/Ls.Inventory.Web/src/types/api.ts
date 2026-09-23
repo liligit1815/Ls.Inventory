@@ -7,6 +7,9 @@ export interface Product {
 }
 export interface Movement { id: number; productId: string; productName: string; unit: string; kind: string; quantityChange: number; quantityAfter: number; note: string; postedAt: string; userName: string }
 export interface Paged<T> { items: T[]; total: number }
+export interface RecentMovements extends Paged<Movement> { from: string; to: string; days: number; inbound: number; outbound: number; inboundCount: number; outboundCount: number }
+export interface DailyMovement { date: string; productId: string; inbound: number; outbound: number; inboundCount: number; outboundCount: number }
+export interface DailyMovements { from: string; to: string; days: number; entries: DailyMovement[] }
 export interface AnalyticsRow { id: string; code: string; name: string; productSpecification: string; rawMaterialSpecification: string; unit: string; note: string; warningQuantity: number | null; isLowStock: boolean; inboundCount: number; outboundCount: number; inbound: number; outbound: number; adjustment: number; netChange: number; currentQuantity: number; isActive: boolean }
 export interface Analytics { from: string; to: string; rows: AnalyticsRow[]; trend: { date: string; inbound: number; outbound: number; adjustment: number; inboundCount: number; outboundCount: number }[] }
 export interface StocktakeSummary { id: string; status: string; createdAt: string; postedAt?: string; lineCount: number }
