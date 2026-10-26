@@ -20,7 +20,7 @@ public static class InventoryEndpoints
             return EndpointSupport.Ok(c, new { total, items });
         });
         g.MapGet("/analytics", (DateOnly? from, DateOnly? to, Guid? productId, string? unit, HttpContext c, InventoryDbContext db) => Analytics(from, to, productId, unit, c, db));
-        g.MapPost("/analytics/query", (AnalyticsQuery r, HttpContext c, InventoryDbContext db) => Analytics(r.From, r.To, null, null, c, db, r.ProductIds));
+        g.MapPost("/analytics/query", (AnalyticsQuery r, HttpContext c, InventoryDbContext db) => Analytics(r.From, r.To, null, null, c, db, r.ProductIds, r.Category));
         g.MapGet("/audit-logs", async (string? search, int? page, HttpContext c, InventoryDbContext db) => {
             var q = db.AuditLogs.AsNoTracking();
             if (!string.IsNullOrWhiteSpace(search)) q = q.Where(x => x.Action.Contains(search) || x.UserName.Contains(search));
@@ -30,16 +30,25 @@ public static class InventoryEndpoints
             return EndpointSupport.Ok(c, new { total, items });
         });
     }
-    private static async Task<IResult> DailyMovements(int? days, HttpContext c, InventoryDbContext db)
+    private static async Task<IResult> DailyMovements(int? days, DateOnly? from, DateOnly? to, string? category, HttpContext c, InventoryDbContext db)
     {
         var rangeDays = days ?? 7;
         if (rangeDays is < 1 or > 367)
             throw new BusinessRuleException("INVALID_RANGE", "请输入 1～367 之间的整数天数");
         var today = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(8));
-        var from = today.AddDays(1 - rangeDays);
-        var startUtc = new DateTimeOffset(from.ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUniversalTime();
-        var endUtc = new DateTimeOffset(today.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUniversalTime();
+        if (from.HasValue != to.HasValue)
+            throw new BusinessRuleException("INVALID_RANGE", "请同时选择开始日期和结束日期");
+        var start = from ?? today.AddDays(1 - rangeDays);
+        var end = to ?? today;
+        if (end < start || end > today || end.DayNumber - start.DayNumber > 366)
+            throw new BusinessRuleException("INVALID_RANGE", "请选择不超过 367 天且不晚于今天的日期范围");
+        rangeDays = end.DayNumber - start.DayNumber + 1;
+        // An omitted category means all products; an empty category means unclassified.
+        var selectedCategory = c.Request.Query.ContainsKey("category") ? InventoryRules.Text(category, 100, "商品类目") : null;
+        var startUtc = new DateTimeOffset(start.ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUniversalTime();
+        var endUtc = new DateTimeOffset(end.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUniversalTime();
         var groups = await db.Movements.AsNoTracking()
+            .Where(x => selectedCategory == null || x.Product.Category == selectedCategory)
             .Where(x => x.PostedAt >= startUtc && x.PostedAt < endUtc && (x.Kind == "Inbound" || x.Kind == "Outbound"))
             .GroupBy(x => new { x.ProductId, Year = x.PostedAt.AddHours(8).Year, Month = x.PostedAt.AddHours(8).Month, Day = x.PostedAt.AddHours(8).Day })
             .Select(g => new {
@@ -49,7 +58,7 @@ public static class InventoryEndpoints
                 inboundCount = g.Count(x => x.Kind == "Inbound"), outboundCount = g.Count(x => x.Kind == "Outbound")
             }).OrderBy(x => x.Year).ThenBy(x => x.Month).ThenBy(x => x.Day).ThenBy(x => x.ProductId).ToArrayAsync();
         return EndpointSupport.Ok(c, new {
-            from, to = today, days = rangeDays,
+            from = start, to = end, days = rangeDays,
             entries = groups.Select(x => new { date = new DateOnly(x.Year, x.Month, x.Day), x.ProductId, x.inbound, x.outbound, x.inboundCount, x.outboundCount })
         });
     }
@@ -115,12 +124,13 @@ public static class InventoryEndpoints
         return EndpointSupport.Ok(c, new { movement.Id, movement.QuantityAfter, alreadyPosted = false });
     }
 
-    public sealed record AnalyticsQuery(DateOnly? From, DateOnly? To, Guid[]? ProductIds);
-    private static async Task<IResult> Analytics(DateOnly? from, DateOnly? to, Guid? productId, string? unit, HttpContext c, InventoryDbContext db, Guid[]? selectedIds = null)
+    public sealed record AnalyticsQuery(DateOnly? From, DateOnly? To, Guid[]? ProductIds, string? Category = null);
+    private static async Task<IResult> Analytics(DateOnly? from, DateOnly? to, Guid? productId, string? unit, HttpContext c, InventoryDbContext db, Guid[]? selectedIds = null, string? category = null)
     {
         if (selectedIds is { Length: > 5000 } || selectedIds?.Any(x => x == Guid.Empty) == true)
             throw new BusinessRuleException("INVALID_PRODUCTS", "商品筛选无效，最多选择 5000 种商品");
         var ids = selectedIds?.Distinct().ToArray() ?? [];
+        var selectedCategory = category is null ? null : InventoryRules.Text(category, 100, "商品类目");
         var today = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(8));
         var start = from ?? new DateOnly(today.Year, today.Month, 1);
         var end = to ?? today;
@@ -129,15 +139,15 @@ public static class InventoryEndpoints
         var startUtc = new DateTimeOffset(start.ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUniversalTime();
         var endUtc = new DateTimeOffset(end.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUniversalTime();
         await using var tx = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
-        var products = await db.Products.AsNoTracking().Where(x => (productId == null || x.Id == productId) && (unit == null || x.Unit == unit) && (ids.Length == 0 || ids.Contains(x.Id))).OrderBy(x => x.Code).ToArrayAsync();
-        var movements = await db.Movements.AsNoTracking().Where(x => x.PostedAt >= startUtc && x.PostedAt < endUtc && (productId == null || x.ProductId == productId) && (unit == null || x.Product.Unit == unit) && (ids.Length == 0 || ids.Contains(x.ProductId))).ToArrayAsync();
+        var products = await db.Products.AsNoTracking().Where(x => (selectedCategory == null || x.Category == selectedCategory) && (productId == null || x.Id == productId) && (unit == null || x.Unit == unit) && (ids.Length == 0 || ids.Contains(x.Id))).OrderBy(x => x.Code).ToArrayAsync();
+        var movements = await db.Movements.AsNoTracking().Where(x => (selectedCategory == null || x.Product.Category == selectedCategory) && x.PostedAt >= startUtc && x.PostedAt < endUtc && (productId == null || x.ProductId == productId) && (unit == null || x.Product.Unit == unit) && (ids.Length == 0 || ids.Contains(x.ProductId))).ToArrayAsync();
         var groups = movements.ToLookup(x => x.ProductId);
         var rows = products.Select(p => {
             var items = groups[p.Id].ToArray();
             var inbound = items.Where(x => x.Kind == "Inbound").Sum(x => (long)x.QuantityChange);
             var outbound = -items.Where(x => x.Kind == "Outbound").Sum(x => (long)x.QuantityChange);
             var adjustment = items.Where(x => x.Kind is "StockGain" or "StockLoss").Sum(x => (long)x.QuantityChange);
-            return new { p.Id, p.Code, p.Name, p.ProductSpecification, p.RawMaterialSpecification, p.Unit, p.IsActive, p.Note, p.WarningQuantity,
+            return new { p.Id, p.Code, p.Name, p.Category, p.ProductSpecification, p.RawMaterialSpecification, p.Unit, p.IsActive, p.Note, p.WarningQuantity,
                 isLowStock = p.IsActive && p.WarningQuantity != null && p.Quantity < p.WarningQuantity,
                 inboundCount = items.Count(x => x.Kind == "Inbound"), outboundCount = items.Count(x => x.Kind == "Outbound"),
                 inbound, outbound, adjustment, netChange = inbound - outbound + adjustment, currentQuantity = p.Quantity };
@@ -150,6 +160,6 @@ public static class InventoryEndpoints
                 inboundCount = g.Count(x => x.Kind == "Inbound"), outboundCount = g.Count(x => x.Kind == "Outbound"),
                 adjustment = g.Where(x => x.Kind is "StockGain" or "StockLoss").Sum(x => (long)x.QuantityChange) }; }).ToArray();
         await tx.CommitAsync();
-        return EndpointSupport.Ok(c, new { from = start, to = end, rows, trend });
+        return EndpointSupport.Ok(c, new { from = start, to = end, category = selectedCategory, rows, trend });
     }
 }

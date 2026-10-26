@@ -19,6 +19,33 @@ const colors=evaluate(readFileSync(new URL('../src/utils/productColors.ts',impor
 const imports=evaluate(readFileSync(new URL('../src/utils/productImport.ts',import.meta.url),'utf8'))
 const importRow=(overrides={})=>({name:'杯',productSpecification:'2.3',rawMaterialSpecification:'铝',unit:'箱',currentQuantity:'0',note:'',sources:['商品信息!2'],selected:true,allowEmptySpecifications:false,...overrides})
 
+test('product sorting groups categories then uses pinyin after removing the category prefix',()=>{
+  const rows=[
+    {id:'blue',category:'餐盒',name:'餐盒蓝色'},
+    {id:'gold',category:'餐盒',name:'餐盒金色'},
+    {id:'pink',category:'餐盒',name:'粉色'},
+    {id:'black',category:'餐盒',name:'餐盒黑金色'},
+    {id:'milk',category:'餐盒',name:'奶牛纹'},
+    {id:'later',category:'纸杯',name:'白色'},
+    {id:'earlier',category:'包装',name:'紫色'},
+    {id:'none',category:'',name:'白色'},
+  ]
+  const original=rows.slice()
+  assert.deepEqual(Array.from(utils.sortProducts(rows),p=>p.id),['earlier','pink','black','gold','blue','milk','later','none'])
+  assert.deepEqual(rows,original)
+})
+
+test('product sorting handles numeric categories, full-width prefixes and same-name units',()=>{
+  const rows=[
+    {id:'large',category:'166/320榴莲盒',name:'166/320榴莲盒金色',unit:'2000/箱'},
+    {id:'small',category:'166/320榴莲盒',name:'166/320榴莲盒金色',unit:'1000/箱'},
+    {id:'gold',category:'84/125（100*20）',name:'84/125 (100×20) 金色'},
+    {id:'pink',category:'84/125（100*20）',name:'粉色'},
+    {id:'40',category:'84/125（100*40）',name:'白色'},
+  ]
+  assert.deepEqual(Array.from(utils.sortProducts(rows),p=>p.id),['pink','gold','40','small','large'])
+})
+
 function stocktakeVm(post,confirm=async()=>{}) {
   const {descriptor}=parse(readFileSync(new URL('../src/views/StocktakesView.vue',import.meta.url),'utf8'))
   const component=evaluate(compileScript(descriptor,{id:'stocktake-navigation-test'}).content,{
@@ -30,6 +57,35 @@ function stocktakeVm(post,confirm=async()=>{}) {
   vm.current.value={id:'stocktake',status:'Draft',lines:[{productId:'a',countedQuantity:3,hasChanged:false}]}
   return vm
 }
+test('sorted stocktake rows retain editable quantities and submit by product id',async()=>{
+  let payload
+  const vm=stocktakeVm(async(_url,body)=>{payload=body})
+  vm.current.value.lines=[
+    {productId:'gold',category:'餐盒',name:'餐盒金色',countedQuantity:10,hasChanged:false},
+    {productId:'pink',category:'餐盒',name:'粉色',countedQuantity:20,hasChanged:false},
+  ]
+  assert.deepEqual(Array.from(vm.sortedLines.value,p=>p.productId),['pink','gold'])
+  vm.sortedLines.value[0].countedQuantity=25
+  await vm.confirm()
+  assert.equal(payload.counts.find(x=>x.productId==='pink').quantity,25)
+  assert.equal(payload.counts.find(x=>x.productId==='gold').quantity,10)
+})
+test('stocktake pagination preserves edits across pages and submits every product',async()=>{
+  let payload
+  const vm=stocktakeVm(async(_url,body)=>{payload=body})
+  vm.current.value.lines=Array.from({length:65},(_,i)=>({productId:'p'+i,name:'商品'+String(i).padStart(2,'0'),countedQuantity:i,hasChanged:false}))
+  assert.equal(vm.pagedLines.value.length,30)
+  vm.pagedLines.value[0].countedQuantity=100
+  vm.page.value=2;assert.equal(vm.pagedLines.value.length,30);assert.equal(vm.pagedLines.value[0].productId,'p30')
+  vm.pagedLines.value[0].countedQuantity=200
+  vm.page.value=3;assert.equal(vm.pagedLines.value.length,5);assert.equal(vm.pagedLines.value[0].productId,'p60')
+  vm.page.value=1;assert.equal(vm.pagedLines.value[0].countedQuantity,100)
+  await vm.confirm()
+  assert.equal(payload.counts.length,65)
+  assert.equal(payload.counts.find(p=>p.productId==='p0').quantity,100)
+  assert.equal(payload.counts.find(p=>p.productId==='p30').quantity,200)
+  assert.equal(payload.counts.find(p=>p.productId==='p64').quantity,64)
+})
 for(const action of ['confirm','cancel']) test('stocktake '+action+' returns to refreshed list only after success',async()=>{
   const calls=[];const vm=stocktakeVm(async(url,payload)=>{calls.push({url,payload})})
   await vm[action]();assert.equal(vm.current.value,undefined);assert.equal(vm.records.value[0].id,'stocktake');assert.equal(calls[0].url,'/api/v1/stocktakes/stocktake/'+action)
@@ -328,7 +384,7 @@ test('calendar and matrix share product-date values and keep mixed units separat
   const products=[{...importRow(),id:'a',name:'蓝色杯',isActive:true},{...importRow(),id:'b',name:'蓝色杯',unit:'个',isActive:false},{...importRow(),id:'c',name:'无记录商品',isActive:true}]
   const entries=[{date:'2026-09-20',productId:'a',inbound:100,outbound:30,inboundCount:2,outboundCount:1},{date:'2026-09-20',productId:'b',inbound:50,outbound:0,inboundCount:1,outboundCount:0}]
   const {vm,stop}=recentHistoryVm(async()=>historyResponse({entries}),{products});t.after(stop);await flushHistory()
-  assert.equal(vm.shownProducts.value.length,2);assert.equal(vm.dates.value.length,7);assert.equal(vm.calendarDays.value[0].items.length,0)
+  assert.equal(vm.shownProducts.value.length,3);assert.equal(vm.dates.value.length,7);assert.equal(vm.calendarDays.value[0].items.length,0)
   assert.equal(vm.index.value.get('2026-09-20').get('a').inbound,100);assert.equal(vm.calendarDays.value[6].items.length,2)
   assert.equal(vm.counts.value.inbound,3);assert.equal(vm.counts.value.outbound,1)
   assert.deepEqual(Array.from(vm.summaryDays.value,day=>day.date),Array.from(vm.dates.value));assert.equal(vm.summaryDays.value[6].date,'2026-09-20');assert.equal(vm.summaryDays.value[6].summary.units.length,2)
@@ -425,16 +481,19 @@ test('date overview defaults to the latest day, selects empty dates and preserve
 })
 
 test('day details paginate independently and filter totals cover the full selected day',async t=>{
-  const products=Array.from({length:19},(_,i)=>({...importRow(),id:'p'+i,name:'商品'+String(i).padStart(2,'0'),unit:i%2?'个':'箱',isActive:true}))
+  const products=Array.from({length:65},(_,i)=>({...importRow(),id:'p'+i,name:'商品'+String(i).padStart(2,'0'),unit:i%2?'个':'箱',isActive:true}))
   const entries=products.map(p=>({date:'2026-09-20',productId:p.id,inbound:10,outbound:2,inboundCount:1,outboundCount:1}))
   const {vm,stop}=recentHistoryVm(async()=>historyResponse({entries}),{products})
   t.after(stop);await flushHistory()
-  assert.equal(vm.details.value.length,19);assert.equal(vm.pagedDetails.value.length,8);assert.equal(vm.detailSummary.value.inboundCount,19)
-  assert.equal(vm.detailSummary.value.units.find(u=>u.unit==='箱').inbound,100)
-  vm.detailPage.value=3;assert.equal(vm.pagedDetails.value.length,3)
-  vm.selectedIds.value=['p0'];await flushHistory();assert.equal(vm.detailPage.value,1);assert.equal(vm.pagedDetails.value[0].product.id,'p0')
+  assert.equal(vm.details.value.length,65);assert.equal(vm.pagedDetails.value.length,30);assert.equal(vm.detailSummary.value.inboundCount,65)
+  assert.equal(vm.detailSummary.value.units.find(u=>u.unit==='箱').inbound,330)
+  assert.equal(vm.pagedProducts.value.length,30);vm.tablePage.value=3;assert.equal(vm.pagedProducts.value.length,5)
+  assert.equal(vm.pagedProducts.value[0].id,'p60');assert.equal(vm.counts.value.inbound,65)
+  vm.detailPage.value=3;assert.equal(vm.pagedDetails.value.length,5)
+  vm.selectedIds.value=['p0'];await flushHistory();assert.equal(vm.detailPage.value,1);assert.equal(vm.tablePage.value,1);assert.equal(vm.pagedDetails.value[0].product.id,'p0')
   vm.selectedIds.value=[];await flushHistory();vm.detailPage.value=3
-  vm.showDate('2026-09-19');assert.equal(vm.detailPage.value,1);assert.equal(vm.pagedDetails.value.length,0)
+  vm.showDate('2026-09-19');assert.equal(vm.detailPage.value,1);assert.equal(vm.pagedDetails.value.length,30);assert.equal(vm.pagedDetails.value[0].movement.inbound,0)
+  vm.onlyWithActivity.value=true;assert.equal(vm.pagedDetails.value.length,0)
 })
 
 test('date selection falls back when the range excludes it and receipt selects today',async t=>{
@@ -452,4 +511,73 @@ test('full product identity is available on click and entry retains selected dat
   assert.equal(vm.productDetailOpen.value,true);assert.equal(vm.detailProduct.value.note,product.note)
   vm.startEntry('Inbound',product.id);assert.equal(vm.productDetailOpen.value,false);assert.equal(vm.detailDate.value,'2026-09-19')
   assert.deepEqual(events[0],['entry','Inbound','a'])
+})
+
+
+test('category filtering includes inactive and zero-activity products and separates unclassified',()=>{
+  const products=[{id:'a',category:'食品'},{id:'b',category:'食品',isActive:false},{id:'c',category:'日用品'},{id:'d',category:''}]
+  assert.equal(utils.categoryOptions(products).length,2)
+  assert.deepEqual(Array.from(utils.productsInCategory(products,'食品'),p=>p.id),['a','b'])
+  assert.deepEqual(Array.from(utils.productsInCategory(products,''),p=>p.id),['d'])
+  assert.equal(utils.productsInCategory(products,null).length,4)
+  assert.equal(utils.productsInCategory(products,'不存在').length,0)
+})
+
+test('category switch clears product narrowing and queries the selected category including unclassified',async t=>{
+  const calls=[]
+  const {vm,props,stop}=recentHistoryVm(async(url,config)=>{calls.push(config.params);return historyResponse()}, {category:'食品',products:[{...importRow(),id:'a',category:'食品'}]})
+  t.after(stop);await flushHistory()
+  assert.equal(vm.onlyWithActivity.value,false);assert.equal(vm.details.value.length,1);assert.equal(vm.details.value[0].movement.inbound,0)
+  vm.selectedIds.value=['a'];vm.onlyWithActivity.value=true;vm.detailPage.value=2
+  props.category='日用品';props.products=[{...importRow(),id:'b',category:'日用品'}];await flushHistory()
+  assert.equal(calls.at(-1).category,'日用品');assert.equal(vm.selectedIds.value.length,0);assert.equal(vm.onlyWithActivity.value,false);assert.equal(vm.detailPage.value,1)
+  assert.equal(vm.details.value[0].product.id,'b')
+  props.category='';await flushHistory();assert.equal(calls.at(-1).category,'')
+  props.category=null;await flushHistory();assert.equal(calls.at(-1).category,undefined)
+})
+
+test('explicit date ranges are sent together and invalid ranges never query',async t=>{
+  const calls=[]
+  const {vm,stop}=recentHistoryVm(async(url,config)=>{calls.push(config.params);return historyResponse()})
+  t.after(stop);await flushHistory();vm.customRange.value=true;await flushHistory()
+  assert.equal(calls.length,1);assert.ok(vm.error.value)
+  for(const range of [null,['2026-01-02','2026-01-01'],['2024-01-01','2026-01-01'],['2999-01-01','2999-01-02']]) {
+    vm.dateRange.value=range;await flushHistory();assert.equal(calls.length,1);assert.ok(vm.error.value)
+  }
+  vm.dateRange.value=['2026-01-01','2026-01-02'];await flushHistory()
+  assert.equal(calls.at(-1).from,'2026-01-01');assert.equal(calls.at(-1).to,'2026-01-02');assert.equal(calls.at(-1).days,undefined)
+  vm.setDays(7);await flushHistory();assert.equal(calls.at(-1).days,7);assert.equal(calls.at(-1).from,undefined)
+  vm.customRange.value=true;vm.focusToday('a');assert.equal(vm.customRange.value,false)
+})
+
+test('workbench category scopes alerts and quick-entry choices',()=>{
+  const vm=dashboard(async()=>{})
+  vm.products.value=[{...importRow(),id:'a',category:'食品',isActive:true,quantity:1,warningQuantity:5},{...importRow(),id:'b',category:'日用品',isActive:true,quantity:1,warningQuantity:5}]
+  vm.category.value='食品';assert.equal(vm.alerts.value.length,1);assert.equal(vm.options.value[0].id,'a')
+  vm.category.value='';assert.equal(vm.alerts.value.length,0);assert.equal(vm.options.value.length,0)
+  vm.categorySelection.value=0;assert.equal(vm.category.value,null);assert.equal(vm.options.value.length,2)
+  vm.categorySelection.value='食品';assert.equal(vm.category.value,'食品');assert.equal(vm.options.value.length,1)
+})
+
+test('analytics category scopes choices and resets product narrowing while querying the whole category',async()=>{
+  const calls=[];const vm=analyticsVm(async(_url,payload)=>{calls.push(payload);return{data:{data:{rows:[],trend:[],category:payload.category}}}})
+  vm.products.value=[{...importRow(),id:'a',category:'餐盒'},{...importRow(),id:'b',category:'纸杯'},{...importRow(),id:'c',category:''}]
+  vm.productIds.value=['b'];vm.productSearch.value='no match';vm.page.value=3
+  vm.categorySelection.value='餐盒';await vm.changeCategory()
+  assert.deepEqual(Array.from(vm.options.value,p=>p.id),['a']);assert.equal(vm.productIds.value.length,0)
+  assert.equal(calls[0].category,'餐盒');assert.equal(calls[0].productIds.length,0);assert.equal(vm.page.value,1)
+  vm.categorySelection.value='';await vm.changeCategory()
+  assert.equal(calls[1].category,'');assert.deepEqual(Array.from(vm.options.value,p=>p.id),['c'])
+  vm.categorySelection.value=0;await vm.changeCategory()
+  assert.equal(calls[2].category,null);assert.equal(vm.options.value.length,3)
+})
+
+test('analytics ignores late responses when switching categories',async()=>{
+  const releases=[];const vm=analyticsVm(()=>new Promise(resolve=>releases.push(resolve)))
+  vm.data.value={rows:[{id:'old'}],trend:[]};vm.category.value='餐盒';const first=vm.changeCategory()
+  assert.equal(vm.data.value,undefined)
+  vm.category.value='纸杯';const second=vm.changeCategory()
+  releases[1]({data:{data:{rows:[{id:'new'}],trend:[],category:'纸杯'}}});await second
+  releases[0]({data:{data:{rows:[{id:'stale'}],trend:[],category:'餐盒'}}});await first
+  assert.equal(vm.data.value.category,'纸杯');assert.equal(vm.rows.value[0].id,'new')
 })

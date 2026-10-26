@@ -112,9 +112,13 @@ public sealed class PresentationTests(LiteDatabaseFixture fixture)
         var p=new Product{Code="UPGRADE"+Guid.NewGuid(),Name="保留数据",Unit="箱",Quantity=7,Note="保留备注"};db.Products.Add(p);await db.SaveChangesAsync();
         // This fixture owns a random ls_lite_test_* schema. No business schema is touched.
         var schema=await db.Database.SqlQueryRaw<string>("SELECT current_schema() AS \"Value\"").SingleAsync();Assert.StartsWith("ls_lite_test_",schema);
-        await db.Database.ExecuteSqlRawAsync("ALTER TABLE products DROP COLUMN warning_quantity; ALTER TABLE products ALTER COLUMN quantity TYPE numeric(20,6)");
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE products DROP COLUMN category; ALTER TABLE products DROP COLUMN warning_quantity; ALTER TABLE products ALTER COLUMN quantity TYPE numeric(20,6)");
         await SchemaUpgrades.ApplyAsync(db);await SchemaUpgrades.ApplyAsync(db);db.ChangeTracker.Clear();
         var preserved=await db.Products.SingleAsync(x=>x.Id==p.Id);Assert.Equal(7,preserved.Quantity);Assert.Equal("保留备注",preserved.Note);Assert.Null(preserved.WarningQuantity);
+        Assert.Equal("", preserved.Category);
+        preserved.Category = "升级后分类"; await db.SaveChangesAsync();
+        await SchemaUpgrades.ApplyAsync(db); db.ChangeTracker.Clear();
+        Assert.Equal("升级后分类", (await db.Products.SingleAsync(x => x.Id == p.Id)).Category);
         var type=await db.Database.SqlQueryRaw<string>("SELECT format_type(atttypid,atttypmod) AS \"Value\" FROM pg_attribute WHERE attrelid='products'::regclass AND attname='quantity'").SingleAsync();Assert.Equal("integer",type);
     }
 

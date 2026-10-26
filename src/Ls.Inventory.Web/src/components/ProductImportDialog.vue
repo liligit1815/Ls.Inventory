@@ -5,7 +5,7 @@ import { api, getErrorMessage } from '@/api/http'
 import type { ApiResponse, Product } from '@/types/api'
 import { identityKey, prepareImport, type ImportRow } from '@/utils/productImport'
 import { productRowStyle } from '@/utils/productColors'
-import { formatQuantity } from '@/utils/inventory'
+import { PRODUCT_PAGE_SIZE, formatQuantity } from '@/utils/inventory'
 
 const emit = defineEmits<{ imported: [] }>()
 const visible = ref(false), busy = ref(false), saving = ref(false), fileName = ref(''), error = ref(''), page = ref(1)
@@ -93,20 +93,20 @@ async function beforeClose(done: () => void) {
       <p class="muted">名称、两项规格、单位共同区分商品，备注作为说明。已有商品（含停用商品）自动跳过。新商品空白库存不能当成 0，重复商品不会累加。</p>
       <el-form :disabled="saving || !!pending">
         <div class="import-toolbar"><el-button type="primary" size="small" @click="selectNew">仅选择新商品</el-button><el-button type="primary" size="small" @click="clearSelection">全部取消</el-button></div>
-        <el-table class="product-typography" :data="checked.slice((page - 1) * 20, page * 20)" max-height="430" :row-class-name="rowClass" :row-style="productRowStyle">
+        <el-table class="product-typography" :data="checked.slice((page - 1) * PRODUCT_PAGE_SIZE, page * PRODUCT_PAGE_SIZE)" max-height="430" :row-class-name="rowClass" :row-style="productRowStyle">
           <el-table-column label="导入" width="60"><template #default="s"><el-checkbox :model-value="s.row.row.selected && !s.row.product" :disabled="!!s.row.product" :aria-label="'选择商品 ' + s.row.row.name" @change="s.row.row.selected = !!$event" /></template></el-table-column>
           <el-table-column label="商品名称" min-width="240"><template #default="s"><el-input class="product-name" v-model="s.row.row.name" maxlength="200" aria-label="商品名称" /></template></el-table-column>
           <el-table-column label="产品规格" min-width="115"><template #default="s"><el-input class="product-spec" v-model="s.row.row.productSpecification" maxlength="100" aria-label="产品规格" @input="s.row.row.allowEmptySpecifications = false" /></template></el-table-column>
           <el-table-column label="原料规格" min-width="135"><template #default="s"><el-input class="product-spec" v-model="s.row.row.rawMaterialSpecification" maxlength="100" aria-label="原料规格" @input="s.row.row.allowEmptySpecifications = false" /></template></el-table-column>
+          <el-table-column label="备注" min-width="140"><template #default="s"><el-input class="product-note" v-model="s.row.row.note" maxlength="500" aria-label="备注" /></template></el-table-column>
           <el-table-column label="单位" width="110"><template #default="s"><el-input class="product-unit" v-model="s.row.row.unit" maxlength="30" aria-label="单位" /></template></el-table-column>
           <el-table-column label="导入现有库存" width="135"><template #default="s"><el-input v-model="s.row.row.currentQuantity" inputmode="numeric" aria-label="导入现有库存" /></template></el-table-column>
           <el-table-column label="系统库存 / 本次导入" width="155"><template #default="s">{{formatQuantity(s.row.product?.quantity ?? 0)}} / {{s.row.product ? '跳过' : s.row.row.currentQuantity.trim() && Number.isFinite(s.row.difference) ? formatQuantity(s.row.difference) : '待填写'}}</template></el-table-column>
-          <el-table-column label="备注" min-width="140"><template #default="s"><el-input class="product-note" v-model="s.row.row.note" maxlength="500" aria-label="备注" /></template></el-table-column>
           <el-table-column label="检查结果" min-width="230"><template #default="s"><div>{{s.row.status}}</div><el-checkbox v-if="!s.row.product && (!s.row.row.productSpecification.trim() || !s.row.row.rawMaterialSpecification.trim())" v-model="s.row.row.allowEmptySpecifications">空白规格确认为无</el-checkbox></template></el-table-column>
           <el-table-column label="来源 / 行号" min-width="145" show-overflow-tooltip><template #default="s">{{s.row.row.sources.join('、')}}</template></el-table-column>
         </el-table>
       </el-form>
-      <el-pagination v-model:current-page="page" :page-size="20" :total="rows.length" layout="total, prev, pager, next" />
+      <el-pagination v-model:current-page="page" :page-size="PRODUCT_PAGE_SIZE" :total="rows.length" layout="total, prev, pager, next" />
     </div>
     <template #footer><span class="muted footer-note">新商品库存记录可追溯，已有商品保持不变。</span><el-button type="primary" :disabled="!canConfirm" :loading="saving" @click="confirm">{{pending ? '重试确认' : '确认导入商品及库存'}}</el-button></template>
   </el-dialog>

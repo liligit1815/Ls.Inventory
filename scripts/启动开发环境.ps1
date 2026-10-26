@@ -28,6 +28,11 @@ $state = [ordered]@{
 }
 
 if (-not (Test-ServicePort 5180 '127.0.0.1')) {
+    . (Join-Path $PSScriptRoot 'development-settings.ps1')
+    $developmentSettings = Get-InventoryDevelopmentSettings
+    foreach ($key in $developmentSettings.Keys) {
+        [Environment]::SetEnvironmentVariable($key.Replace(':', '__'), $developmentSettings[$key], 'Process')
+    }
     Push-Location $projectRoot
     try {
         & dotnet build 'src/Ls.Inventory.Api/Ls.Inventory.Api.csproj' --nologo `
@@ -41,9 +46,13 @@ if (-not (Test-ServicePort 5180 '127.0.0.1')) {
         throw '接口编译失败，请查看 .dev-runtime/build.log。'
     }
 
+    # WebApplication gives DOTNET_ENVIRONMENT priority over ASPNETCORE_ENVIRONMENT.
+    # Set both so a parent shell cannot silently disable development User Secrets.
+    $env:DOTNET_ENVIRONMENT = 'Development'
     $env:ASPNETCORE_ENVIRONMENT = 'Development'
     $env:ASPNETCORE_URLS = 'http://127.0.0.1:5180'
     $api = Start-Process -FilePath (Join-Path $projectRoot 'src/Ls.Inventory.Api/bin/Debug/net10.0/Ls.Inventory.Api.exe') `
+        -ArgumentList @('--environment', 'Development', '--urls', 'http://127.0.0.1:5180') `
         -WorkingDirectory (Join-Path $projectRoot 'src/Ls.Inventory.Api') `
         -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $runtimeDirectory 'api.log') `
@@ -83,6 +92,12 @@ $state | ConvertTo-Json | Set-Content -LiteralPath $stateFile -Encoding UTF8
 
 $deadline = [DateTimeOffset]::Now.AddSeconds(40)
 do {
+    if ($api -and $api.HasExited) {
+        throw "后端已退出（退出码 $($api.ExitCode)），请查看 .dev-runtime/api-error.log 和 api.log。"
+    }
+    if ($web -and $web.HasExited) {
+        throw "前端已退出（退出码 $($web.ExitCode)），请查看 .dev-runtime/web-error.log 和 web.log。"
+    }
     try {
         $apiReady = (Invoke-WebRequest -Uri 'http://127.0.0.1:5180/health/ready' -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200
     }

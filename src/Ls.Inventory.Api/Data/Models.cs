@@ -24,6 +24,7 @@ public sealed class Product
     public Guid Id { get; set; } = Guid.CreateVersion7();
     public string Code { get; set; } = "";
     public string Name { get; set; } = "";
+    public string Category { get; set; } = "";
     public string ProductSpecification { get; set; } = "";
     public string RawMaterialSpecification { get; set; } = "";
     public string Unit { get; set; } = "";

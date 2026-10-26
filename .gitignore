@@ -26,3 +26,18 @@ src/Ls.Inventory.Api/appsettings.Development.local.json
 *.key
 *.backup
 *.dump
+
+# Local work, release archives and generated binaries
+**/*.tsbuildinfo
+**/publish/
+**/.cache/
+*.zip
+*.7z
+*.tar
+*.gz
+*.dll
+*.exe
+*.pdb
+/tmp/
+/temp/
+/.codex_tmp_*/

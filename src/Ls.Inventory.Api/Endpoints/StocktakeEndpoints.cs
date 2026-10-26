@@ -42,7 +42,7 @@ public static class StocktakeEndpoints
         });
     }
     private static object View(Stocktake s) => new { s.Id, s.Status, s.CreatedAt, s.PostedAt,
-        lines = s.Lines.OrderBy(x => x.Product.Code).Select(x => new { x.ProductId, x.Product.Code, x.Product.Name,
+        lines = s.Lines.OrderBy(x => x.Product.Code).Select(x => new { x.ProductId, x.Product.Code, x.Product.Name, x.Product.Category, x.Product.Note,
             x.Product.ProductSpecification, x.Product.RawMaterialSpecification, x.Product.Unit, x.ExpectedQuantity,
             x.CountedQuantity, currentQuantity = x.Product.Quantity, hasChanged = x.Product.Version != x.ExpectedVersion }) };
 

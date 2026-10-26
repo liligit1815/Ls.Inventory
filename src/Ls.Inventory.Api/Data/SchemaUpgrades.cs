@@ -8,6 +8,7 @@ public static class SchemaUpgrades
     {
         await using var transaction = await db.Database.BeginTransactionAsync();
         await db.Database.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(82461002)");
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE products ADD COLUMN IF NOT EXISTS category varchar(100) NOT NULL DEFAULT ''");
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE products ADD COLUMN IF NOT EXISTS warning_quantity numeric(20,6) NULL");
         await db.Database.ExecuteSqlRawAsync("""
             DO $$ BEGIN

@@ -21,6 +21,7 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
             e.HasIndex(x => new { x.Name, x.ProductSpecification, x.RawMaterialSpecification, x.Unit }).IsUnique();
             e.Property(x => x.Code).HasMaxLength(80);
             e.Property(x => x.Name).HasMaxLength(200);
+            e.Property(x => x.Category).HasMaxLength(100).HasDefaultValue("");
             e.Property(x => x.ProductSpecification).HasMaxLength(100);
             e.Property(x => x.RawMaterialSpecification).HasMaxLength(100);
             e.Property(x => x.Unit).HasMaxLength(30);

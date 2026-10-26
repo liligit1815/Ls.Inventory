@@ -1,8 +1,8 @@
 # Windows 生产环境安装部署指南
 
-适用：在另一台 Windows 电脑上正式运行 LS 库存轻量版。PostgreSQL 已安装，端口 **5433**，管理员用户名 **postgres**，密码沿用你已配置的数据库密码。本指南不记录真实密码，也不连接或修改现有开发库。
+适用：在另一台 Windows 电脑上正式运行 LS 库存轻量版。在目标设备安装 PostgreSQL，监听端口设为 **15432**，管理员用户名 **postgres**；数据库密码在目标设备配置。本指南不记录真实密码，也不连接或修改现有开发库。
 
-默认假设 PostgreSQL 和网站安装在新电脑的同一台机器，因此数据库地址使用 **127.0.0.1**。如果数据库实际位于另一台机器，只修改数据库 Host 为那台服务器的内网地址；不要把开发服务器地址直接复制到生产配置。生产项目库统一建议使用 **ls_inventory**，业务 schema 为 **lite**，不是 PostgreSQL 自带的 postgres 验证库。
+默认假设 PostgreSQL 和网站安装在新电脑的同一台机器，因此数据库地址使用 **127.0.0.1**。如果数据库实际位于另一台机器，只修改数据库 Host 为那台服务器的内网地址；本包的 127.0.0.1 指新设备自身，不会自动连接原开发电脑。生产项目库统一建议使用 **ls_inventory**，业务 schema 为 **lite**，不是 PostgreSQL 自带的 postgres 验证库。
 
 ## 一、部署方式与准备
 
@@ -14,11 +14,11 @@
 | 生产电脑 | 受支持的 64 位 Windows（例如 Windows 11 专业版或 Windows Server 2022/2025）、IIS、.NET 10 Hosting Bundle、已安装的 PostgreSQL |
 | 网站访问 | 固定局域网地址、访问名称和受信任 HTTPS 证书；例子使用 inventory.example.com，必须替换为实际名称 |
 
-Windows 家庭版不提供本指南要求的完整 IIS 部署方式。安装需本机管理员权限。新电脑不需要安装源码编译工具或 Node.js。不要把开发电脑的数据库测试数据自动迁入生产。
+Windows 家庭版不提供本指南要求的完整 IIS 部署方式。安装需本机管理员权限。新电脑不需要安装源码编译工具或 Node.js。发布包不携带数据库数据。若需要迁移原有业务数据，单独按第十节执行备份和恢复。
 
 ## 二、下载或构建 Windows x64 部署包
 
-优先从 [GitHub Release](https://github.com/liligit1815/Ls.Inventory/releases) 下载 `LS.Inventory-0.2.0-win-x64.zip`，核对旁边的 SHA-256 校验文件后解压。包内 `README-Windows.md` 提供新版 IIS 安装与保留数据升级步骤；已有站点使用 `tools/Prepare-Update.ps1` 准备独立版本目录，不要直接覆盖旧站点。该包包含 win-x64 运行时，仍需 IIS Hosting Bundle 托管模块。
+使用构建产出的 `LS.Inventory-0.3.0-win-x64.zip`，核对旁边的 SHA-256 校验文件后解压。如从 [GitHub Releases](https://github.com/liligit1815/Ls.Inventory/releases) 下载，需核对附件实际版本。包内 `README-Windows.md` 提供新版 IIS 安装与保留数据升级步骤；已有站点使用 `tools/Prepare-Update.ps1` 准备独立版本目录，不要直接覆盖旧站点。该包包含 win-x64 运行时，仍需 IIS Hosting Bundle 托管模块。
 
 以下是从源码自行构建的方法：
 
@@ -47,7 +47,7 @@ Windows 家庭版不提供本指南要求的完整 IIS 部署方式。安装需�
 
 ## 四、准备生产数据库
 
-使用 PostgreSQL SQL Shell（psql）或 pgAdmin 连接新电脑：服务器 127.0.0.1，端口 5433，维护数据库 postgres，用户名 postgres，输入现有密码。以下数据库创建命令只在**确认同名项目库尚不存在**时执行；如果已经有数据，先备份，不删除重建。
+安装 PostgreSQL 时将监听端口设为 15432；若已安装并使用其他端口，需由管理员在 postgresql.conf 中将 port 改为 15432 后重启数据库服务，再核对监听状态。使用 PostgreSQL SQL Shell（psql）或 pgAdmin 连接新电脑：服务器 127.0.0.1，端口 15432，维护数据库 postgres，用户名 postgres，输入现有密码。以下数据库创建命令只在**确认同名项目库尚不存在**时执行；如果已经有数据，先备份，不删除重建。
 
 在 psql 中运行：
 
@@ -59,7 +59,7 @@ CREATE SCHEMA IF NOT EXISTS lite;
 
 `\connect` 是 psql 命令，不是 SQL；使用 pgAdmin 时创建数据库后，在 ls_inventory 中重新打开查询工具，再执行 CREATE SCHEMA。不要在一个事务块中执行 CREATE DATABASE。
 
-同机部署不需向局域网开放数据库端口。数据库在另一台服务器时，只允许网站服务器的固定 IP 访问 5433，并在 pg_hba.conf 配置对应数据库、用户和精确来源范围，使用密码认证，不能使用 trust 或对整个公网放行。[PostgreSQL 客户端认证说明](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html)
+同机部署不需向局域网开放数据库端口。数据库在另一台服务器时，只允许网站服务器的固定 IP 访问 15432，并在 pg_hba.conf 配置对应数据库、用户和精确来源范围，使用密码认证，不能使用 trust 或对整个公网放行。[PostgreSQL 客户端认证说明](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html)
 
 ## 五、填写生产配置
 
@@ -69,7 +69,7 @@ CREATE SCHEMA IF NOT EXISTS lite;
    | 配置 | 填写方法 |
    | --- | --- |
    | AllowedHosts | 实际访问域名／主机名，不写 https:// 或端口；多个名称用分号分隔 |
-   | ConnectionStrings:Inventory | 本机 Host=127.0.0.1，Port=5433，Database=ls_inventory，Username=postgres，填写当前数据库密码，Search Path=lite |
+   | ConnectionStrings:Inventory | 本机 Host=127.0.0.1，Port=15432，Database=ls_inventory，Username=postgres，填写当前数据库密码，Search Path=lite |
    | Jwt:SigningKey | 新生成的随机密钥，不使用开发密钥，不保留 REPLACE 占位内容 |
    | DatabaseInitialization:Initialize | 正常运行保持 false；首次初始化另用命令执行 |
 
@@ -141,7 +141,7 @@ try {
    New-NetFirewallRule -DisplayName 'LS Inventory HTTPS' -Direction Inbound -Protocol TCP -LocalPort 443 -Action Allow -Profile Domain,Private -RemoteAddress LocalSubnet
    ```
 
-   只在需要其它电脑访问时添加；由管理员按实际网络范围调整。不要开放 5173/5180；同机数据库也不开放 5433。
+   只在需要其它电脑访问时添加；由管理员按实际网络范围调整。不要开放 5173/5180；同机数据库也不开放 15432。
 8. 启动网站，在浏览器访问 `https://实际网站名称/`。登录 admin 并强制修改初始密码。密码支持 6～128 位和纯数字，但建议生产使用较长随机密码。仅 HTTPS 可可靠使用生产的 Secure 登录和防伪 Cookie。
 
 本指南按**站点根路径 /** 部署，不配置 `/inventory` 子目录，也不额外叠加反向代理。直接刷新 `/stocktakes` 等页面应正常；缺失 API 仍返回 404，不返回网页。
@@ -203,7 +203,7 @@ try {
 ```powershell
 New-Item -ItemType Directory -Path C:\LSInventory\backup -Force
 $inventoryBackup = 'C:\LSInventory\backup\ls_inventory-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.dump'
-pg_dump -h 127.0.0.1 -p 5433 -U postgres -W -d ls_inventory -Fc -f $inventoryBackup
+pg_dump -h 127.0.0.1 -p 15432 -U postgres -W -d ls_inventory -Fc -f $inventoryBackup
 if ($LASTEXITCODE -ne 0) { throw '备份失败' }
 ```
 
@@ -214,8 +214,8 @@ if ($LASTEXITCODE -ne 0) { throw '备份失败' }
 先创建一个全新的专用恢复数据库，例如 ls_inventory_restorecheck，不覆盖当前库：
 
 ```powershell
-createdb -h 127.0.0.1 -p 5433 -U postgres -W ls_inventory_restorecheck
-pg_restore -h 127.0.0.1 -p 5433 -U postgres -W --exit-on-error --no-owner --no-privileges -d ls_inventory_restorecheck C:\LSInventory\backup\选定备份.dump
+createdb -h 127.0.0.1 -p 15432 -U postgres -W ls_inventory_restorecheck
+pg_restore -h 127.0.0.1 -p 15432 -U postgres -W --exit-on-error --no-owner --no-privileges -d ls_inventory_restorecheck C:\LSInventory\backup\选定备份.dump
 ```
 
 每条命令检查退出码，恢复后检查商品、数量、流水、盘库和账号；为低权限账号重新授权。切换真实生产库前停止网站、确认恢复目标和数据时间点，并备份当前状态。本指南不提供覆盖式删除命令。备份恢复也会恢复当时的账号密码和会话，必要时改密撤销旧会话；不要把开发账号密码和测试数据直接用于生产。[pg_restore 官方说明](https://www.postgresql.org/docs/current/app-pgrestore.html)
@@ -236,7 +236,7 @@ pg_restore -h 127.0.0.1 -p 5433 -U postgres -W --exit-on-error --no-owner --no-p
 | 500.19 | web.config XML、IIS 模块及权限，不能把整个配置删除 |
 | 500.30／500.31 | Hosting Bundle／10.0 运行时、配置占位符、数据库连接，查看事件查看器 Application 日志 |
 | 登录反复失效或防伪错误 | HTTPS／证书、主机名是否一致、Production 环境，刷新页面取得新令牌 |
-| 连接数据库失败 | Host 是否误指开发电脑、5433、密码转义、项目库是否创建、数据库服务状态和 pg_hba.conf |
+| 连接数据库失败 | 新设备 PostgreSQL 是否监听 127.0.0.1:15432、密码转义、项目库是否创建、数据库服务状态和 pg_hba.conf |
 | relation does not exist／权限不足 | 是否完成初始化、Search Path=lite、是否误用 postgres 验证库、是否授权 |
 | 首次密码不生效 | 只有空用户表才建立初始账号；已有密码不会被 BootstrapAdmin 配置重置 |
 | 刷新子页面 404 | 是否发布新后端及完整 wwwroot，是否错误部署为子目录 |

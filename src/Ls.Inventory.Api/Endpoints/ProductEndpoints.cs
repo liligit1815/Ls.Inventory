@@ -29,7 +29,7 @@ public static class ProductEndpoints
         });
         g.MapGet("/", async (HttpContext c, InventoryDbContext db) => EndpointSupport.Ok(c,
             await db.Products.AsNoTracking().OrderBy(x => x.Code).Select(x => new { x.Id, x.Code, x.Name,
-                x.ProductSpecification, x.RawMaterialSpecification, x.Unit, x.Note, x.IsActive, x.Quantity, x.WarningQuantity, x.Version }).ToArrayAsync()));
+                x.Category, x.ProductSpecification, x.RawMaterialSpecification, x.Unit, x.Note, x.IsActive, x.Quantity, x.WarningQuantity, x.Version }).ToArrayAsync()));
         g.MapPut("/{id:guid}/warning", async (Guid id, WarningRequest r, HttpContext c, InventoryDbContext db) => {
             if (r.WarningQuantity is not null) InventoryRules.Quantity(r.WarningQuantity.Value, true);
             await using var tx = await db.Database.BeginTransactionAsync();
@@ -69,7 +69,7 @@ public static class ProductEndpoints
             return EndpointSupport.Ok(c, Snapshot(product));
         });
     }
-    public static object Snapshot(Product p) => new { p.Id, p.Code, p.Name, p.ProductSpecification, p.RawMaterialSpecification, p.Unit, p.Note, p.IsActive, p.Quantity, p.WarningQuantity, p.Version };
+    public static object Snapshot(Product p) => new { p.Id, p.Code, p.Name, p.Category, p.ProductSpecification, p.RawMaterialSpecification, p.Unit, p.Note, p.IsActive, p.Quantity, p.WarningQuantity, p.Version };
     public sealed record WarningRequest(int? WarningQuantity, long Version);
     public sealed record WarningTarget(Guid Id, long Version);
     public sealed record BatchWarningRequest(int? WarningQuantity, WarningTarget[]? Products);
@@ -77,11 +77,12 @@ public static class ProductEndpoints
     private static void Set(Product p, ProductRequest r)
     {
         p.Name = InventoryRules.Text(r.Name, 200, "商品名称", true);
+        p.Category = InventoryRules.Text(r.Category, 100, "商品类目");
         p.ProductSpecification = InventoryRules.Text(r.ProductSpecification, 100, "产品规格");
         p.RawMaterialSpecification = InventoryRules.Text(r.RawMaterialSpecification, 100, "原料规格");
         p.Unit = InventoryRules.Text(r.Unit, 30, "单位", true);
         p.Note = InventoryRules.Text(r.Note, 500, "备注"); p.IsActive = r.IsActive;
     }
     public sealed record ProductRequest(string Name, string? ProductSpecification, string? RawMaterialSpecification,
-        string Unit, string? Note, bool IsActive = true, long Version = 0);
+        string Unit, string? Note, bool IsActive = true, long Version = 0, string? Category = null);
 }
