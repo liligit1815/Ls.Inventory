@@ -27,12 +27,12 @@ public sealed partial class LiteFlowTests
         var result = await Data(await c.PostAsJsonAsync("/api/v1/analytics/query", new { category }));
         Assert.Equal(category, result.GetProperty("category").GetString());
         var rows = result.GetProperty("rows").EnumerateArray().ToArray();
-        Assert.Equal(2, rows.Length);
+        Assert.Single(rows);
         Assert.All(rows, row => Assert.Equal(category, row.GetProperty("category").GetString()));
         Assert.Equal(3, rows.Sum(row => row.GetProperty("inbound").GetInt64()));
         Assert.Equal(3, result.GetProperty("trend").EnumerateArray().Sum(day => day.GetProperty("inbound").GetInt64()));
         Assert.Equal(1, result.GetProperty("trend").EnumerateArray().Sum(day => day.GetProperty("inboundCount").GetInt32()));
-        Assert.Contains(rows, row => row.GetProperty("id").GetGuid() == zero && !row.GetProperty("isActive").GetBoolean());
+        Assert.DoesNotContain(rows, row => row.GetProperty("id").GetGuid() == zero);
 
         var outside = await Data(await c.PostAsJsonAsync("/api/v1/analytics/query", new { category, productIds = new[] { b } }));
         Assert.Empty(outside.GetProperty("rows").EnumerateArray());

@@ -14,5 +14,5 @@ export interface AnalyticsRow { id: string; code: string; name: string; category
 export interface Analytics { from: string; to: string; category: string | null; rows: AnalyticsRow[]; trend: { date: string; inbound: number; outbound: number; adjustment: number; inboundCount: number; outboundCount: number }[] }
 export interface StocktakeSummary { id: string; status: string; createdAt: string; postedAt?: string; lineCount: number }
 export interface StocktakeLine { productId: string; code: string; name: string; category: string; note: string; productSpecification: string; rawMaterialSpecification: string; unit: string; expectedQuantity: number; countedQuantity?: number; currentQuantity: number; hasChanged: boolean }
-export interface Stocktake extends StocktakeSummary { lines: StocktakeLine[] }
+export interface Stocktake extends StocktakeSummary { lines: StocktakeLine[]; hasChanged: boolean }
 export interface AuditLog { id: number; occurredAt: string; userName: string; action: string; ipAddress: string }

@@ -11,7 +11,7 @@ public static class InventoryEndpoints
         g.MapGet("/movements/daily", DailyMovements);
         g.MapGet("/products/{productId:guid}/recent-movements", RecentMovements);
         g.MapGet("/movements", async (Guid? productId, int? page, HttpContext c, InventoryDbContext db) => {
-            var q = db.Movements.AsNoTracking().Where(x => productId == null || x.ProductId == productId);
+            var q = db.Movements.AsNoTracking().Where(x => x.Product.IsActive && (productId == null || x.ProductId == productId));
             var p = Math.Max(1, page ?? 1);
             var total = await q.CountAsync();
             var items = await q.OrderByDescending(x => x.Id).Skip((p - 1) * 30).Take(30).Select(x => new {
@@ -48,6 +48,7 @@ public static class InventoryEndpoints
         var startUtc = new DateTimeOffset(start.ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUniversalTime();
         var endUtc = new DateTimeOffset(end.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUniversalTime();
         var groups = await db.Movements.AsNoTracking()
+            .Where(x => x.Product.IsActive)
             .Where(x => selectedCategory == null || x.Product.Category == selectedCategory)
             .Where(x => x.PostedAt >= startUtc && x.PostedAt < endUtc && (x.Kind == "Inbound" || x.Kind == "Outbound"))
             .GroupBy(x => new { x.ProductId, Year = x.PostedAt.AddHours(8).Year, Month = x.PostedAt.AddHours(8).Month, Day = x.PostedAt.AddHours(8).Day })
@@ -77,7 +78,7 @@ public static class InventoryEndpoints
         await using var tx = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
         if (!await db.Products.AnyAsync(x => x.Id == productId))
             throw new BusinessRuleException("NOT_FOUND", "商品不存在", 404);
-        var q = db.Movements.AsNoTracking().Where(x => x.ProductId == productId
+        var q = db.Movements.AsNoTracking().Where(x => x.Product.IsActive && x.ProductId == productId
             && x.PostedAt >= startUtc && x.PostedAt < endUtc && (x.Kind == "Inbound" || x.Kind == "Outbound"));
         var totals = await q.GroupBy(x => x.Kind).Select(g => new {
             kind = g.Key, count = g.Count(), quantity = g.Sum(x => (long)x.QuantityChange)
@@ -139,8 +140,8 @@ public static class InventoryEndpoints
         var startUtc = new DateTimeOffset(start.ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUniversalTime();
         var endUtc = new DateTimeOffset(end.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.FromHours(8)).ToUniversalTime();
         await using var tx = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
-        var products = await db.Products.AsNoTracking().Where(x => (selectedCategory == null || x.Category == selectedCategory) && (productId == null || x.Id == productId) && (unit == null || x.Unit == unit) && (ids.Length == 0 || ids.Contains(x.Id))).OrderBy(x => x.Code).ToArrayAsync();
-        var movements = await db.Movements.AsNoTracking().Where(x => (selectedCategory == null || x.Product.Category == selectedCategory) && x.PostedAt >= startUtc && x.PostedAt < endUtc && (productId == null || x.ProductId == productId) && (unit == null || x.Product.Unit == unit) && (ids.Length == 0 || ids.Contains(x.ProductId))).ToArrayAsync();
+        var products = await db.Products.AsNoTracking().Where(x => x.IsActive && (selectedCategory == null || x.Category == selectedCategory) && (productId == null || x.Id == productId) && (unit == null || x.Unit == unit) && (ids.Length == 0 || ids.Contains(x.Id))).OrderBy(x => x.Code).ToArrayAsync();
+        var movements = await db.Movements.AsNoTracking().Where(x => x.Product.IsActive && (selectedCategory == null || x.Product.Category == selectedCategory) && x.PostedAt >= startUtc && x.PostedAt < endUtc && (productId == null || x.ProductId == productId) && (unit == null || x.Product.Unit == unit) && (ids.Length == 0 || ids.Contains(x.ProductId))).ToArrayAsync();
         var groups = movements.ToLookup(x => x.ProductId);
         var rows = products.Select(p => {
             var items = groups[p.Id].ToArray();

@@ -18,7 +18,7 @@ Windows 家庭版不提供本指南要求的完整 IIS 部署方式。安装需�
 
 ## 二、下载或构建 Windows x64 部署包
 
-使用构建产出的 `LS.Inventory-0.3.0-win-x64.zip`，核对旁边的 SHA-256 校验文件后解压。如从 [GitHub Releases](https://github.com/liligit1815/Ls.Inventory/releases) 下载，需核对附件实际版本。包内 `README-Windows.md` 提供新版 IIS 安装与保留数据升级步骤；已有站点使用 `tools/Prepare-Update.ps1` 准备独立版本目录，不要直接覆盖旧站点。该包包含 win-x64 运行时，仍需 IIS Hosting Bundle 托管模块。
+使用构建产出的 `LS.Inventory-0.3.1-win-x64.zip`，核对旁边的 SHA-256 校验文件后解压。如从 [GitHub Releases](https://github.com/liligit1815/Ls.Inventory/releases) 下载，需核对附件实际版本。包内 `README-Windows.md` 提供新版 IIS 安装与保留数据升级步骤；已有站点使用 `tools/Prepare-Update.ps1` 准备独立版本目录，不要直接覆盖旧站点。该包包含 win-x64 运行时，仍需 IIS Hosting Bundle 托管模块。
 
 以下是从源码自行构建的方法：
 
@@ -224,8 +224,8 @@ pg_restore -h 127.0.0.1 -p 15432 -U postgres -W --exit-on-error --no-owner --no-
 
 1. 记录当前版本，停止写入并备份数据库、生产配置及当前发布目录。
 2. 将新发布包复制到新的版本目录，保留原目录；把受保护的生产配置复制到新目录，核对连接、密钥和权限。
-3. 若有结构升级，在停站期间从新目录执行 `--initialize-database`，不能运行重建命令。使用低权限账号时按第八节临时提供结构管理连接。
-4. 初始化成功后修改 IIS 物理路径到新目录并启动，完成健康与业务验收。不要把 `.artifacts` 中的示例配置覆盖真实配置。
+3. 从 0.3.0 升级到 0.3.1 没有结构变化，无需初始化，保留现有连接及 `Search Path`。其他版本若有结构升级，在停站期间从新目录执行 `--initialize-database`，不能运行重建命令。使用低权限账号时按第八节临时提供结构管理连接。
+4. 核对配置并完成必要的结构升级后，修改 IIS 物理路径到新目录并启动，完成健康与业务验收。不要把 `.artifacts` 中的示例配置覆盖真实配置。
 5. 失败时保持停止写入，先判断数据库结构是否兼容旧版本。没有结构变化可切回旧目录；有不兼容变化需经确认恢复升级前数据库，恢复会丢失备份之后的数据，不能自动回退覆盖。
 
 ## 十一、常见问题

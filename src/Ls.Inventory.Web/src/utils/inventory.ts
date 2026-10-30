@@ -29,7 +29,7 @@ export function productsInCategory<T extends { category?: string }>(products: T[
 }
 
 const productOrder = new Intl.Collator('zh-CN-u-co-pinyin', { numeric: true, sensitivity: 'base' })
-type SortableProduct = { category?: string; name: string; productSpecification?: string; rawMaterialSpecification?: string; unit?: string; code?: string }
+type SortableProduct = { category?: string; name: string; productSpecification?: string; rawMaterialSpecification?: string; unit?: string; code?: string; isActive?: boolean }
 const sortText = (value = '') => value.normalize('NFKC').replace(/[×＊]/g, '*').replace(/\s+/g, '').trim()
 function nameWithoutCategory(product: SortableProduct) {
   const name = sortText(product.name), category = sortText(product.category)
@@ -38,6 +38,7 @@ function nameWithoutCategory(product: SortableProduct) {
 // Keep the row objects so editing a sorted stocktake still updates its original counts.
 export function sortProducts<T extends SortableProduct>(products: readonly T[]): T[] {
   return [...products].sort((a, b) => {
+    if ((a.isActive === false) !== (b.isActive === false)) return a.isActive === false ? 1 : -1
     const aCategory = sortText(a.category), bCategory = sortText(b.category)
     if (!aCategory !== !bCategory) return aCategory ? -1 : 1
     return productOrder.compare(aCategory, bCategory)

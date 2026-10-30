@@ -18,3 +18,17 @@
 .product-info-grid>.product-name{min-width:0;overflow-wrap:anywhere}
 .product-info-spec{min-width:0;overflow-wrap:anywhere;text-align:left}
 .product-info-note{min-width:0;overflow-wrap:anywhere}
+
+/* Product tables follow text height; wrapping adds only the lines it needs. */
+.el-table.compact-product-table td.el-table__cell{padding:1px 0;border-bottom-width:1px}
+.el-table.compact-product-table th.el-table__cell{padding:5px 0;border-bottom-width:1px}
+.el-table.compact-product-table .cell{padding:0 8px;line-height:24px;overflow-wrap:anywhere}
+.el-table.compact-product-table .product-name,.el-table.compact-product-table .product-spec,.el-table.compact-product-table .product-note,.el-table.compact-product-table .product-unit,
+.el-table.compact-product-table .product-name .cell,.el-table.compact-product-table .product-spec .cell,.el-table.compact-product-table .product-note .cell,.el-table.compact-product-table .product-unit .cell{line-height:24px!important}
+.compact-product-table .el-button{min-height:24px;height:24px;padding:3px 9px;font-size:13px}
+.compact-product-table .el-input-number{width:100%;height:26px;line-height:26px}
+.compact-product-table .el-input__wrapper{padding:0 7px}
+.compact-product-table .el-input__inner{height:24px;font-size:16px!important;line-height:24px}
+.compact-product-table .el-switch{height:24px;line-height:24px}
+.compact-product-table .el-tag{height:22px;line-height:20px}
+.compact-product-table .movement-actions{margin:0;gap:5px}

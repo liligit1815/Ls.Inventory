@@ -43,7 +43,7 @@ public sealed partial class LiteFlowTests
         using (var scope = fixture.Factory.Services.CreateScope()) {
             var db = scope.ServiceProvider.GetRequiredService<InventoryDbContext>();
             var product = await db.Products.SingleAsync(x => x.Id == a);
-            product.Category = category; product.IsActive = false;
+            product.Category = category;
             var user = await db.Users.SingleAsync(x => x.UserName == "admin");
             void Add(Guid id, string kind, int quantity, DateTimeOffset at) => db.Movements.Add(new Movement {
                 RequestId = Guid.NewGuid(), ProductId = id, UserId = user.Id, Kind = kind,

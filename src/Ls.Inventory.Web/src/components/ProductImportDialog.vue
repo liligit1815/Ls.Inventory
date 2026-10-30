@@ -36,7 +36,7 @@ async function choose(event: Event) {
     const form = new FormData(); form.append('file', file)
     const [preview, products] = await Promise.all([
       api.post<ApiResponse<{ rows: Omit<ImportRow, 'selected' | 'allowEmptySpecifications'>[]; sourceRowCount: number; skippedSheets: string[] }>>('/api/v1/products/import/preview', form, { timeout: 60000 }),
-      api.get<ApiResponse<Product[]>>('/api/v1/products/'),
+      api.get<ApiResponse<Product[]>>('/api/v1/products/', { params: { includeInactive: true } }),
     ])
     existing.value = products.data.data
     const keys = new Set(existing.value.map(identityKey))

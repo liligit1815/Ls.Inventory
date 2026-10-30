@@ -6,6 +6,16 @@ import type { ApiResponse, Product } from '@/types/api'
 import PageHeader from '@/components/PageHeader.vue'
 import { PRODUCT_PAGE_SIZE, formatQuantity, isLowStock, productLabel, validQuantity } from '@/utils/inventory'
 import { productRowStyle } from '@/utils/productColors'
+import ProductTable from '@/components/ProductTable.vue'
+import { productTableColumns, type TableColumn } from '@/utils/tableColumns'
+const columns: TableColumn[] = [
+  ...productTableColumns(),
+  { key: 'quantity', label: '当前库存', width: 100, minWidth: 80 },
+  { key: 'enabled', label: '开启预警', width: 95, minWidth: 80 },
+  { key: 'warningQuantity', label: '预警值', width: 140, minWidth: 100 },
+  { key: 'status', label: '当前状态', width: 100, minWidth: 80 },
+  { key: 'actions', label: '操作', width: 85, minWidth: 75, fixed: 'right' },
+]
 const products=ref<Product[]>([]), search=ref(''), onlyLow=ref(false), page=ref(1), loading=ref(false), saving=ref('')
 const table=ref<{clearSelection:()=>void}>()
 const selection=ref<Product[]>([]), batchQuantity=ref<number>(), batchEnabled=ref(true)
@@ -39,9 +49,14 @@ onMounted(load)
 <template><div class="page-shell"><PageHeader title="库存预警" description="可逐商品设置，或勾选多个商品统一设置预警值。"><el-button type="primary" :loading="loading" :disabled="!!saving" @click="load">刷新数据</el-button></PageHeader>
   <section class="panel" v-loading="loading"><div class="section-title"><h2>{{alertCount}} 种商品库存告急</h2></div><div class="toolbar"><el-input v-model="search" placeholder="搜索名称、规格、单位或备注" clearable @input="page=1"/><el-checkbox v-model="onlyLow" @change="page=1">只看库存告急</el-checkbox></div>
     <div class="batch-toolbar"><strong>已选 {{selection.length}} 种商品</strong><el-switch v-model="batchEnabled" active-text="开启预警" inactive-text="关闭预警" :disabled="!!saving" aria-label="批量开启预警"/><el-input-number v-model="batchQuantity" :min="0" :max="2147483647" :precision="0" :step="1" :controls="false" :disabled="!batchEnabled||!!saving" placeholder="统一预警值" aria-label="统一预警值"/><el-button type="primary" :disabled="!selection.length||!!saving" :loading="saving==='batch'" @click="saveBatch">保存所选商品</el-button><el-button :disabled="!selection.length||!!saving" @click="clearSelection">取消选择</el-button></div>
-    <el-table class="product-typography" ref="table" row-key="id" @selection-change="selectProducts" :data="filtered.slice((page-1)*PRODUCT_PAGE_SIZE,page*PRODUCT_PAGE_SIZE)" :row-style="productRowStyle"><el-table-column type="selection" width="50" :reserve-selection="true" :selectable="() => !saving"/><el-table-column label="商品" min-width="640"><template #default="s"><div class="product-info-grid"><strong class="product-name">{{s.row.name}}</strong><span class="product-spec product-info-spec">{{s.row.productSpecification || '无产品规格'}} / {{s.row.rawMaterialSpecification || '无原料规格'}}</span><div class="product-note product-info-note">备注：{{s.row.note || '无'}}</div></div></template></el-table-column><el-table-column prop="unit" class-name="product-unit" label="单位" width="120"/><el-table-column label="当前库存" width="115"><template #default="s"><strong>{{formatQuantity(s.row.quantity)}}</strong></template></el-table-column>
-      <el-table-column label="开启预警" width="110"><template #default="s"><el-switch v-model="drafts[s.row.id]!.enabled" :disabled="!!saving" :aria-label="s.row.name+'开启预警'" /></template></el-table-column><el-table-column label="预警值" width="180"><template #default="s"><el-input-number v-model="drafts[s.row.id]!.quantity" :min="0" :precision="0" :step="1" :max="2147483647" :controls="false" :disabled="!drafts[s.row.id]!.enabled || !!saving" placeholder="设置数量" :aria-label="s.row.name+'预警值'" /></template></el-table-column>
-      <el-table-column label="当前状态" width="115"><template #default="s"><el-tag :type="isLowStock(s.row)?'danger':'info'">{{!s.row.isActive?'商品已停用':isLowStock(s.row)?'库存告急':s.row.warningQuantity==null?'未配置':'正常'}}</el-tag></template></el-table-column><el-table-column label="操作" width="100" fixed="right"><template #default="s"><el-button type="primary" size="small" :loading="saving===s.row.id" :disabled="!!saving&&saving!==s.row.id" @click="save(s.row)">保存</el-button></template></el-table-column></el-table><el-pagination v-model:current-page="page" :page-size="PRODUCT_PAGE_SIZE" :total="filtered.length" layout="total, prev, pager, next"/>
+    <ProductTable ref="table" storage-key="stock-warnings" :columns="columns" row-key="id" selection :selectable="() => !saving" @selection-change="selectProducts" :data="filtered.slice((page-1)*PRODUCT_PAGE_SIZE,page*PRODUCT_PAGE_SIZE)" :row-style="productRowStyle">
+      <template #category="{row}">{{row.category || '未分类'}}</template>
+      <template #quantity="{row}"><strong>{{formatQuantity(row.quantity)}}</strong></template>
+      <template #enabled="{row}"><el-switch v-model="drafts[row.id]!.enabled" :disabled="!!saving" :aria-label="row.name+'开启预警'" /></template>
+      <template #warningQuantity="{row}"><el-input-number v-model="drafts[row.id]!.quantity" :min="0" :precision="0" :step="1" :max="2147483647" :controls="false" :disabled="!drafts[row.id]!.enabled || !!saving" placeholder="设置数量" :aria-label="row.name+'预警值'" /></template>
+      <template #status="{row}"><el-tag :type="isLowStock(row)?'danger':'info'">{{isLowStock(row)?'库存告急':row.warningQuantity==null?'未配置':'正常'}}</el-tag></template>
+      <template #actions="{row}"><el-button type="primary" size="small" :loading="saving===row.id" :disabled="!!saving&&saving!==row.id" @click="save(row)">保存</el-button></template>
+    </ProductTable><el-pagination v-model:current-page="page" :page-size="PRODUCT_PAGE_SIZE" :total="filtered.length" layout="total, prev, pager, next"/>
     <p class="muted" style="margin:18px 0 0">修改后点击对应商品的“保存”生效。关闭并保存可取消该商品预警；预警值 0 表示库存不会触发低库存提醒。</p>
   </section></div></template>
 <style scoped>

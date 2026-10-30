@@ -151,7 +151,7 @@ public sealed partial class LiteFlowTests
         await Data(await c.PutAsJsonAsync($"/api/v1/products/{zeroId}", new { name, productSpecification = "", rawMaterialSpecification = "", unit = "个", note = "保留", isActive = false, version = created.GetProperty("version").GetInt64() }));
         var inactiveSkip = await Data(await c.PostAsJsonAsync("/api/v1/products/import/confirm", new ProductImportEndpoints.ImportRequest(Guid.NewGuid(), "inactive.xlsx", [zero with { CurrentQuantity = -10, AllowEmptySpecifications = false }])));
         Assert.Equal(1, inactiveSkip.GetProperty("skipped").GetInt32());
-        var inactive = (await Data(await c.GetAsync("/api/v1/products/"))).EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == zeroId);
+        var inactive = (await Data(await c.GetAsync("/api/v1/products/?includeInactive=true"))).EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == zeroId);
         Assert.False(inactive.GetProperty("isActive").GetBoolean()); Assert.Equal("保留", inactive.GetProperty("note").GetString()); Assert.Equal(0, inactive.GetProperty("quantity").GetDecimal());
         c.DefaultRequestHeaders.Remove("X-XSRF-TOKEN");
         using var file = new MultipartFormDataContent(); file.Add(new ByteArrayContent([1, 2, 3]), "file", "bad.xlsx");

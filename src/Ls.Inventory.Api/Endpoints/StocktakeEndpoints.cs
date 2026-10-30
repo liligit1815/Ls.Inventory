@@ -10,7 +10,7 @@ public static class StocktakeEndpoints
     {
         var g = app.MapGroup("/api/v1/stocktakes").RequireAuthorization();
         g.MapGet("/", async (HttpContext c, InventoryDbContext db) => EndpointSupport.Ok(c,
-            await db.Stocktakes.OrderByDescending(x => x.CreatedAt).Take(100).Select(x => new { x.Id, x.Status, x.CreatedAt, x.PostedAt, lineCount = x.Lines.Count }).ToArrayAsync()));
+            await db.Stocktakes.OrderByDescending(x => x.CreatedAt).Take(100).Select(x => new { x.Id, x.Status, x.CreatedAt, x.PostedAt, lineCount = x.Lines.Count(l => l.Product.IsActive) }).ToArrayAsync()));
         g.MapGet("/{id:guid}", async (Guid id, HttpContext c, InventoryDbContext db) => {
             var stocktake = await db.Stocktakes.AsNoTracking().Include(x => x.Lines).ThenInclude(x => x.Product).SingleOrDefaultAsync(x => x.Id == id)
                 ?? throw new BusinessRuleException("NOT_FOUND", "盘库记录不存在", 404);
@@ -42,21 +42,26 @@ public static class StocktakeEndpoints
         });
     }
     private static object View(Stocktake s) => new { s.Id, s.Status, s.CreatedAt, s.PostedAt,
-        lines = s.Lines.OrderBy(x => x.Product.Code).Select(x => new { x.ProductId, x.Product.Code, x.Product.Name, x.Product.Category, x.Product.Note,
+        hasChanged = s.Lines.Any(x => !x.Product.IsActive || x.Product.Version != x.ExpectedVersion),
+        lines = s.Lines.Where(x => x.Product.IsActive).OrderBy(x => x.Product.Code).Select(x => new { x.ProductId, x.Product.Code, x.Product.Name, x.Product.Category, x.Product.Note,
             x.Product.ProductSpecification, x.Product.RawMaterialSpecification, x.Product.Unit, x.ExpectedQuantity,
             x.CountedQuantity, currentQuantity = x.Product.Quantity, hasChanged = x.Product.Version != x.ExpectedVersion }) };
 
     private static async Task<IResult> Confirm(Guid id, CountRequest request, HttpContext c, InventoryDbContext db)
     {
-        if (request.Counts is null || request.Counts.Count == 0 || request.Counts.Select(x => x.ProductId).Distinct().Count() != request.Counts.Count)
+        if (request.Counts is null || request.Counts.Select(x => x.ProductId).Distinct().Count() != request.Counts.Count)
             throw new BusinessRuleException("INVALID_COUNTS", "请填写完整且不重复的实盘数量");
         foreach (var value in request.Counts) InventoryRules.Quantity(value.Quantity, true);
         await using var tx = await db.Database.BeginTransactionAsync();
         var s = await db.Stocktakes.FromSqlInterpolated($"SELECT * FROM stocktakes WHERE id = {id} FOR UPDATE").SingleOrDefaultAsync()
             ?? throw new BusinessRuleException("NOT_FOUND", "盘库记录不存在", 404);
         await db.Entry(s).Collection(x => x.Lines).LoadAsync();
+        // Hidden disabled lines still invalidate the original snapshot; never post a partial count.
+        var productIds = s.Lines.Select(x => x.ProductId).ToArray();
+        if (s.Status == "Draft" && await db.Products.AnyAsync(x => productIds.Contains(x.Id) && !x.IsActive))
+            throw new BusinessRuleException("STOCKTAKE_STALE", "部分商品已停用，请取消本次盘库并重新开始，避免覆盖最新库存", 409);
         var counts = request.Counts.ToDictionary(x => x.ProductId, x => x.Quantity);
-        if (counts.Count != s.Lines.Count || s.Lines.Any(x => !counts.ContainsKey(x.ProductId))) throw new BusinessRuleException("INVALID_COUNTS", "请填写全部商品的实盘数量");
+        if (counts.Count == 0 || counts.Count != s.Lines.Count || s.Lines.Any(x => !counts.ContainsKey(x.ProductId))) throw new BusinessRuleException("INVALID_COUNTS", "请填写全部商品的实盘数量");
         if (s.Status == "Posted") {
             if (s.Lines.Any(x => x.CountedQuantity != counts[x.ProductId])) throw new BusinessRuleException("REQUEST_CONFLICT", "盘库已确认，不能修改结果", 409);
             return EndpointSupport.Ok(c, new { s.Id, alreadyPosted = true });

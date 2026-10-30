@@ -8,16 +8,79 @@ import { parse, compileScript } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
 const require=createRequire(import.meta.url)
-function evaluate(source,mocks={}){
+const sharedMocks={}
+function evaluate(source,mocks={},globals={}){
   const module={exports:{}}
   const code=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText
-  new Script(code).runInNewContext({module,exports:module.exports,require:name=>mocks[name]??require(name),console,crypto:webcrypto})
+  new Script(code).runInNewContext({module,exports:module.exports,require:name=>mocks[name]??sharedMocks[name]??require(name),console,crypto:webcrypto,...globals})
   return module.exports
 }
 const utils=evaluate(readFileSync(new URL('../src/utils/inventory.ts',import.meta.url),'utf8'))
+const tableColumns=evaluate(readFileSync(new URL('../src/utils/tableColumns.ts',import.meta.url),'utf8'))
+sharedMocks['@/utils/tableColumns']=tableColumns
+sharedMocks['@/components/ProductTable.vue']={}
 const colors=evaluate(readFileSync(new URL('../src/utils/productColors.ts',import.meta.url),'utf8'))
 const imports=evaluate(readFileSync(new URL('../src/utils/productImport.ts',import.meta.url),'utf8'))
 const importRow=(overrides={})=>({name:'杯',productSpecification:'2.3',rawMaterialSpecification:'铝',unit:'箱',currentQuantity:'0',note:'',sources:['商品信息!2'],selected:true,allowEmptySpecifications:false,...overrides})
+
+test('table preferences reject invalid saved values and keep the required product identity visible',()=>{
+  const columns=tableColumns.productTableColumns()
+  for(const saved of [null,'broken','[]','null','{"hidden":true}']) {
+    assert.deepEqual(Array.from(tableColumns.readTablePreferences(columns,saved).hidden),['code','category'])
+  }
+  const result=tableColumns.readTablePreferences(columns,JSON.stringify({hidden:['name','note','obsolete'],widths:{name:400,note:0,unit:10000,category:'200',code:160,obsolete:200}}))
+  assert.deepEqual(Array.from(result.hidden),['note'])
+  assert.equal(result.widths.name,400);assert.equal(result.widths.code,160)
+  assert.deepEqual(Object.keys(result.widths).sort(),['code','name'])
+  assert.equal(tableColumns.tableCellValue({product:{quantity:0}},'product.quantity'),0)
+  assert.equal(tableColumns.tableCellValue({product:{note:''}},'product.note'),'—')
+  assert.equal(tableColumns.tableCellValue({},'product.name'),'—')
+})
+
+function productTableVm(t, storage, storageKey='test-products', rows=[]) {
+  const {descriptor}=parse(readFileSync(new URL('../src/components/ProductTable.vue',import.meta.url),'utf8'))
+  const component=evaluate(compileScript(descriptor,{id:'table-preferences-test'}).content,{
+    vue, '@/utils/tableColumns':tableColumns,
+  },{localStorage:storage}).default
+  const props=vue.reactive({columns:tableColumns.productTableColumns(),data:rows,storageKey})
+  const scope=vue.effectScope()
+  const vm=scope.run(()=>component.setup(props,{expose(){},emit(){}}))
+  t.after(()=>scope.stop())
+  return {vm,props}
+}
+
+test('column changes survive reload, stay separate per page, and retain edited row objects',async t=>{
+  const saved=new Map(), storage={getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,value)}
+  const {vm,props}=productTableVm(t,storage,'stocktake',[{id:'a',countedQuantity:5}])
+  const original=props.data[0], note=props.columns.find(c=>c.key==='note')
+  await vm.setVisible(note,false)
+  props.data[0].countedQuantity=12
+  vm.resizeColumn(210,140,{columnKey:'note'})
+  await vm.setVisible(props.columns.find(c=>c.key==='name'),false)
+  assert.equal(vm.visibleColumns.value.some(c=>c.key==='name'),true)
+  assert.equal(vm.visibleColumns.value.some(c=>c.key==='note'),false)
+  assert.equal(props.data[0],original);assert.equal(original.countedQuantity,12)
+  const restored=productTableVm(t,storage,'stocktake').vm
+  assert.equal(restored.preferences.value.widths.note,210)
+  assert.equal(restored.visibleColumns.value.some(c=>c.key==='note'),false)
+  const other=productTableVm(t,storage,'warnings').vm
+  assert.equal(other.visibleColumns.value.some(c=>c.key==='note'),true)
+  assert.equal(other.preferences.value.widths.note,undefined)
+  await vm.resetColumns()
+  assert.equal(vm.visibleColumns.value.some(c=>c.key==='note'),true)
+  assert.equal(vm.preferences.value.widths.note,undefined)
+  assert.equal(props.data[0],original);assert.equal(original.countedQuantity,12)
+})
+
+test('column controls remain usable if browser storage is blocked',async t=>{
+  const {vm,props}=productTableVm(t,{getItem(){throw Error('blocked')},setItem(){throw Error('blocked')}})
+  await vm.setVisible(props.columns.find(c=>c.key==='note'),false)
+  vm.resizeColumn(180,110,{columnKey:'unit'})
+  assert.equal(vm.preferences.value.widths.unit,180)
+  assert.equal(vm.visibleColumns.value.some(c=>c.key==='note'),false)
+  await vm.resetColumns()
+  assert.equal(vm.visibleColumns.value.some(c=>c.key==='note'),true)
+})
 
 test('product sorting groups categories then uses pinyin after removing the category prefix',()=>{
   const rows=[
@@ -57,6 +120,63 @@ function stocktakeVm(post,confirm=async()=>{}) {
   vm.current.value={id:'stocktake',status:'Draft',lines:[{productId:'a',countedQuantity:3,hasChanged:false}]}
   return vm
 }
+test('stocktake with a hidden changed product cannot submit visible counts',async()=>{
+  let calls=0
+  const vm=stocktakeVm(async()=>{calls++})
+  vm.current.value.hasChanged=true
+  assert.equal(vm.changed.value,true)
+  await vm.confirm()
+  assert.equal(calls,0)
+})
+
+function catalogVm(t, initial=[]) {
+  const calls=[], scope=vue.effectScope()
+  const {descriptor}=parse(readFileSync(new URL('../src/views/ProductsView.vue',import.meta.url),'utf8'))
+  const component=evaluate(compileScript(descriptor,{id:'catalog-status-test'}).content,{
+    vue:{...vue,onMounted(){}},'element-plus':{ElMessage:{error(){}}},
+    '@/api/http':{api:{get:async(url,config)=>{calls.push({url,config});return {data:{data:initial}}}},getErrorMessage:String},
+    '@/utils/inventory':utils,'@/utils/productColors':colors,'@/components/PageHeader.vue':{},'@/components/ProductImportDialog.vue':{},
+  }).default
+  const vm=scope.run(()=>component.setup({}, {expose(){}}))
+  t.after(()=>scope.stop())
+  return {vm,calls}
+}
+
+test('catalog loads disabled products and puts them after all active products across pages',async t=>{
+  const active=Array.from({length:31},(_,i)=>({...importRow(),id:'a'+i,code:'A'+i,category:'纸杯',name:'纸杯'+i,isActive:true}))
+  const disabled=[{...importRow(),id:'d2',code:'D2',category:'包装',name:'包装2',isActive:false},{...importRow(),id:'d1',code:'D1',category:'包装',name:'包装1',isActive:false}]
+  const {vm,calls}=catalogVm(t,[...disabled,...active])
+  await vm.load()
+  assert.equal(calls[0].config.params.includeInactive,true)
+  assert.equal(vm.filtered.value.length,33)
+  assert.ok(vm.filtered.value.slice(0,31).every(p=>p.isActive))
+  assert.deepEqual(Array.from(vm.filtered.value.slice(30),p=>p.id),['a30','d1','d2'])
+  vm.page.value=2
+  vm.status.value='inactive';await vue.nextTick()
+  assert.equal(vm.page.value,1)
+  assert.deepEqual(Array.from(vm.filtered.value,p=>p.id),['d1','d2'])
+  vm.category.value='包装';vm.search.value='D2';await vue.nextTick()
+  assert.deepEqual(Array.from(vm.filtered.value,p=>p.id),['d2'])
+  vm.status.value='active';await vue.nextTick()
+  assert.equal(vm.filtered.value.length,0)
+  vm.category.value=null;vm.search.value='';await vue.nextTick()
+  assert.equal(vm.filtered.value.length,31)
+  vm.status.value='all';await vue.nextTick()
+  assert.equal(vm.filtered.value.length,33)
+})
+
+test('catalog clamps the page when editing status removes the last filtered row',async t=>{
+  const {vm}=catalogVm(t)
+  vm.products.value=Array.from({length:31},(_,i)=>({...importRow(),id:'p'+i,code:'P'+i,isActive:false}))
+  vm.status.value='inactive';await vue.nextTick()
+  vm.page.value=2
+  vm.products.value[30].isActive=true;await vue.nextTick()
+  assert.equal(vm.filtered.value.length,30)
+  assert.equal(vm.page.value,1)
+  vm.status.value='active';await vue.nextTick()
+  assert.deepEqual(Array.from(vm.filtered.value,p=>p.id),['p30'])
+})
+
 test('sorted stocktake rows retain editable quantities and submit by product id',async()=>{
   let payload
   const vm=stocktakeVm(async(_url,body)=>{payload=body})
@@ -194,20 +314,27 @@ test('quantity validation accepts explicit zero only for stocktake',()=>{
 test('product label includes both specifications and unit',()=>{
   assert.equal(utils.productLabel({name:'杯',productSpecification:'2.3',rawMaterialSpecification:'铝',unit:'箱'}),'杯 · 2.3 · 铝 · 箱')
 })
-test('confirm sends one immediate posted movement',async()=>{
+for(const kind of ['Inbound','Outbound']) test(kind+' confirmation closes the drawer after saving and refreshes the workbench',async()=>{
   const calls=[];const vm=dashboard(async(url,payload)=>{calls.push({url,payload});return{data:{data:{quantityAfter:3,alreadyPosted:false}}}})
+  vm.entryOpen.value=true;vm.kind.value=kind
   await vm.submit();assert.equal(calls.length,1);assert.equal(calls[0].url,'/api/v1/movements');assert.equal(calls[0].payload.quantity,3)
+  assert.equal(calls[0].payload.kind,kind);assert.equal(vm.entryOpen.value,false)
+  assert.equal(vm.receipt.value.kind,kind);assert.equal(vm.receipt.value.quantityAfter,3)
   assert.equal(vm.quantity.value,undefined);assert.equal(vm.pending.value,undefined)
   assert.equal(vm.historyRefresh.value,1)
 })
 test('double submit while busy sends only once',async()=>{
   let release;let calls=0;const vm=dashboard(()=>{calls++;return new Promise(resolve=>{release=resolve})})
-  const first=vm.submit();await vm.submit();assert.equal(calls,1)
+  vm.entryOpen.value=true
+  const first=vm.submit();await vm.submit();assert.equal(calls,1);assert.equal(vm.entryOpen.value,true)
   release({data:{data:{quantityAfter:3}}});await first
+  assert.equal(vm.entryOpen.value,false)
 })
 test('uncertain network response retries exact same request id',async()=>{
   const calls=[];const vm=dashboard(async(_url,payload)=>{calls.push({...payload});if(calls.length===1)throw new Error('network');return{data:{data:{quantityAfter:3,alreadyPosted:true}}}})
-  await vm.submit();assert.ok(vm.pending.value);await vm.submit()
+  vm.entryOpen.value=true
+  await vm.submit();assert.ok(vm.pending.value);assert.equal(vm.entryOpen.value,true);assert.equal(vm.quantity.value,3)
+  await vm.submit();assert.equal(vm.entryOpen.value,false)
   assert.equal(calls.length,2);assert.equal(calls[0].requestId,calls[1].requestId);assert.equal(vm.pending.value,undefined)
 })
 test('invalid quantity never sends a request',async()=>{
@@ -295,7 +422,7 @@ function warningVm(put,confirm=async()=>{}) {
 test('all product surfaces share the product typography rules',()=>{
   for(const file of ['views/ProductsView.vue','views/DashboardView.vue','views/StockWarningsView.vue','views/StocktakesView.vue','views/DataDashboardView.vue','components/ProductImportDialog.vue']) {
     const source=readFileSync(new URL('../src/'+file,import.meta.url),'utf8')
-    for(const style of ['product-name','product-spec','product-unit'])assert.ok(source.includes(style),file+' missing '+style)
+    for(const style of ['product-name','product-spec','product-unit'])assert.ok(source.includes(style)||source.includes('productTableColumns'),file+' missing '+style)
   }
   const css=readFileSync(new URL('../src/styles/product-typography.css',import.meta.url),'utf8')
   assert.ok(css.includes('--product-text-size:16px'));assert.ok(css.includes('--product-unit-size:17px'))
@@ -337,10 +464,10 @@ test('overview defaults to 7 days and preserves display choices on refresh',asyn
   const {vm,props,stop}=recentHistoryVm(async(url,config)=>{calls.push({url,...config.params});return historyResponse()})
   t.after(stop);await flushHistory()
   assert.equal(calls[0].url,'/api/v1/movements/daily');assert.equal(calls[0].days,7);assert.equal(vm.view.value,'calendar')
-  vm.view.value='table';vm.selectedIds.value=['a'];await flushHistory();assert.equal(calls.length,1)
+  vm.view.value='cards';vm.selectedIds.value=['a'];await flushHistory();assert.equal(calls.length,1)
   vm.days.value=30;await flushHistory();assert.equal(calls.at(-1).days,30)
-  props.refreshKey++;await flushHistory();assert.equal(calls.length,3);assert.equal(vm.view.value,'table');assert.deepEqual(Array.from(vm.selectedIds.value),['a'])
-  vm.view.value='cards';props.refreshKey++;await flushHistory();assert.equal(vm.view.value,'cards');assert.equal(calls.length,4)
+  props.refreshKey++;await flushHistory();assert.equal(calls.length,3);assert.equal(vm.view.value,'cards');assert.deepEqual(Array.from(vm.selectedIds.value),['a'])
+  vm.view.value='calendar';props.refreshKey++;await flushHistory();assert.equal(vm.view.value,'calendar');assert.equal(calls.length,4)
 })
 
 test('overview ignores late results and errors from previous ranges',async t=>{
@@ -380,8 +507,8 @@ test('calendar dates include empty days, cross months and years, and align Monda
   assert.equal(overview.calendarDates('2024-02-28','2024-03-01').length,3)
 })
 
-test('calendar and matrix share product-date values and keep mixed units separate',async t=>{
-  const products=[{...importRow(),id:'a',name:'蓝色杯',isActive:true},{...importRow(),id:'b',name:'蓝色杯',unit:'个',isActive:false},{...importRow(),id:'c',name:'无记录商品',isActive:true}]
+test('calendar and daily cards share product-date values and keep mixed units separate',async t=>{
+  const products=[{...importRow(),id:'a',name:'蓝色杯',isActive:true},{...importRow(),id:'b',name:'蓝色杯',unit:'个',isActive:true},{...importRow(),id:'c',name:'无记录商品',isActive:true}]
   const entries=[{date:'2026-09-20',productId:'a',inbound:100,outbound:30,inboundCount:2,outboundCount:1},{date:'2026-09-20',productId:'b',inbound:50,outbound:0,inboundCount:1,outboundCount:0}]
   const {vm,stop}=recentHistoryVm(async()=>historyResponse({entries}),{products});t.after(stop);await flushHistory()
   assert.equal(vm.shownProducts.value.length,3);assert.equal(vm.dates.value.length,7);assert.equal(vm.calendarDays.value[0].items.length,0)
@@ -487,10 +614,9 @@ test('day details paginate independently and filter totals cover the full select
   t.after(stop);await flushHistory()
   assert.equal(vm.details.value.length,65);assert.equal(vm.pagedDetails.value.length,30);assert.equal(vm.detailSummary.value.inboundCount,65)
   assert.equal(vm.detailSummary.value.units.find(u=>u.unit==='箱').inbound,330)
-  assert.equal(vm.pagedProducts.value.length,30);vm.tablePage.value=3;assert.equal(vm.pagedProducts.value.length,5)
-  assert.equal(vm.pagedProducts.value[0].id,'p60');assert.equal(vm.counts.value.inbound,65)
+  assert.equal(vm.counts.value.inbound,65)
   vm.detailPage.value=3;assert.equal(vm.pagedDetails.value.length,5)
-  vm.selectedIds.value=['p0'];await flushHistory();assert.equal(vm.detailPage.value,1);assert.equal(vm.tablePage.value,1);assert.equal(vm.pagedDetails.value[0].product.id,'p0')
+  vm.selectedIds.value=['p0'];await flushHistory();assert.equal(vm.detailPage.value,1);assert.equal(vm.pagedDetails.value[0].product.id,'p0')
   vm.selectedIds.value=[];await flushHistory();vm.detailPage.value=3
   vm.showDate('2026-09-19');assert.equal(vm.detailPage.value,1);assert.equal(vm.pagedDetails.value.length,30);assert.equal(vm.pagedDetails.value[0].movement.inbound,0)
   vm.onlyWithActivity.value=true;assert.equal(vm.pagedDetails.value.length,0)

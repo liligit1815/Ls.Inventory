@@ -27,8 +27,9 @@ public static class ProductEndpoints
             await db.SaveChangesAsync(); await tx.CommitAsync();
             return EndpointSupport.Ok(c, products.Select(Snapshot).ToArray());
         });
-        g.MapGet("/", async (HttpContext c, InventoryDbContext db) => EndpointSupport.Ok(c,
-            await db.Products.AsNoTracking().OrderBy(x => x.Code).Select(x => new { x.Id, x.Code, x.Name,
+        g.MapGet("/", async (bool? includeInactive, HttpContext c, InventoryDbContext db) => EndpointSupport.Ok(c,
+            await db.Products.AsNoTracking().Where(x => includeInactive == true || x.IsActive)
+                .OrderByDescending(x => x.IsActive).ThenBy(x => x.Code).Select(x => new { x.Id, x.Code, x.Name,
                 x.Category, x.ProductSpecification, x.RawMaterialSpecification, x.Unit, x.Note, x.IsActive, x.Quantity, x.WarningQuantity, x.Version }).ToArrayAsync()));
         g.MapPut("/{id:guid}/warning", async (Guid id, WarningRequest r, HttpContext c, InventoryDbContext db) => {
             if (r.WarningQuantity is not null) InventoryRules.Quantity(r.WarningQuantity.Value, true);

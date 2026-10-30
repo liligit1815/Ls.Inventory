@@ -76,5 +76,6 @@ if ($webXml) {
 Copy-Item -LiteralPath (Join-Path $packageRoot 'release.json') -Destination (Join-Path $target 'release.json')
 Write-Host "New version staged: $target"
 Write-Host 'Existing site, database, passwords and IIS were not changed.'
-Write-Host 'Next: stop writes, back up the database, initialize from the new site in Production, then switch the IIS physical path and validate HTTPS/health/login.'
+Write-Host 'Next: stop writes, back up the database, verify the preserved configuration, then switch the IIS physical path and validate HTTPS/health/login.'
+Write-Host 'Upgrading 0.3.0 to 0.3.1 needs no database initialization. For earlier versions, follow the conditional migration steps in README-Windows.md.'
 Write-Host 'Keep the old site and database backup until acceptance. Read README-Windows.md for exact steps.'

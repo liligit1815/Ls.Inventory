@@ -6,12 +6,20 @@ import type { ApiResponse, Stocktake, StocktakeSummary } from '@/types/api'
 import { productRowStyle } from '@/utils/productColors'
 import PageHeader from '@/components/PageHeader.vue'
 import { PRODUCT_PAGE_SIZE, formatDateTime, statusLabel, validQuantity, formatQuantity, sortProducts } from '@/utils/inventory'
+import ProductTable from '@/components/ProductTable.vue'
+import { productTableColumns, type TableColumn } from '@/utils/tableColumns'
+const columns: TableColumn[] = [
+  ...productTableColumns(),
+  { key: 'expectedQuantity', label: '盘库时账面库存', prop: 'expectedQuantity', width: 150, minWidth: 120 },
+  { key: 'countedQuantity', label: '实盘数量', width: 160, minWidth: 110 },
+  { key: 'difference', label: '差异', width: 100, minWidth: 70 },
+]
 const records=ref<StocktakeSummary[]>([]), current=ref<Stocktake>(), busy=ref(false), loading=ref(false)
 const page=ref(1)
 const sortedLines=computed(()=>sortProducts(current.value?.lines ?? []))
 const pagedLines=computed(()=>sortedLines.value.slice((page.value-1)*PRODUCT_PAGE_SIZE,page.value*PRODUCT_PAGE_SIZE))
 const missing=computed(()=>current.value?.lines.filter(x=>!validQuantity(x.countedQuantity,true)).length??0)
-const changed=computed(()=>current.value?.lines.some(x=>x.hasChanged)??false)
+const changed=computed(()=>Boolean(current.value?.hasChanged || current.value?.lines.some(x=>x.hasChanged)))
 async function list(){try{records.value=(await api.get<ApiResponse<StocktakeSummary[]>>('/api/v1/stocktakes/')).data.data}catch(e){ElMessage.error(getErrorMessage(e))}}
 async function open(id:string){loading.value=true;try{const s=(await api.get<ApiResponse<Stocktake>>(`/api/v1/stocktakes/${id}`)).data.data;s.lines.forEach(l=>{if(l.countedQuantity==null)l.countedQuantity=undefined});current.value=s;page.value=1}catch(e){ElMessage.error(getErrorMessage(e))}finally{loading.value=false}}
 async function start(){if(busy.value)return;busy.value=true;try{const r=await api.post<ApiResponse<{id:string}>>('/api/v1/stocktakes/');await list();await open(r.data.data.id)}catch(e){ElMessage.error(getErrorMessage(e))}finally{busy.value=false}}
@@ -44,7 +52,11 @@ onMounted(list)
 <template><div class="page-shell"><PageHeader title="盘库" description="清点实物，填写实际数量，确认后自动处理库存差异。"><el-button type="primary" :loading="busy" @click="start">开始盘库</el-button></PageHeader>
   <section v-if="current" class="panel stocktake-detail" v-loading="loading"><div class="section-title"><h2>{{statusLabel(current.status)}} · {{formatDateTime(current.createdAt)}}</h2><el-button :disabled="busy" @click="current=undefined">返回列表</el-button></div>
     <el-alert v-if="current.status==='Draft'" :type="changed?'warning':'info'" :closable="false" :title="changed?'部分商品已发生变化，请取消后重新开始盘库':'请填写每种商品的实盘数量，零库存请明确填 0。填写内容在确认前不修改库存；离开页面前请完成确认。'" />
-    <el-table class="product-typography" :data="pagedLines" :row-style="productRowStyle" max-height="620"><el-table-column label="商品" min-width="640"><template #default="s"><div class="product-info-grid"><span class="product-name">{{s.row.name}}</span><span class="product-spec product-info-spec">{{s.row.productSpecification || '无产品规格'}} / {{s.row.rawMaterialSpecification || '无原料规格'}}</span><div class="product-note product-info-note">备注：{{s.row.note || '无'}}</div></div></template></el-table-column><el-table-column prop="unit" label="单位" width="120" class-name="product-unit" /><el-table-column prop="expectedQuantity" label="盘库时账面库存" width="175" /><el-table-column label="实盘数量" width="190"><template #default="s"><el-input-number v-if="current.status==='Draft'" v-model="s.row.countedQuantity" :min="0" :precision="0" :step="1" :max="2147483647" :controls="false" :disabled="busy" placeholder="请填写" /><span v-else>{{s.row.countedQuantity??'—'}}</span></template></el-table-column><el-table-column label="差异" width="110"><template #default="s"><span v-if="s.row.countedQuantity!=null" :class="s.row.countedQuantity<s.row.expectedQuantity?'negative':'positive'">{{formatQuantity(s.row.countedQuantity-s.row.expectedQuantity)}}</span><span v-else>待填写</span></template></el-table-column></el-table>
+    <ProductTable storage-key="stocktake-details" :columns="columns" :data="pagedLines" row-key="productId" :row-style="productRowStyle" max-height="620">
+      <template #category="{row}">{{row.category || '未分类'}}</template>
+      <template #countedQuantity="{row}"><el-input-number v-if="current.status==='Draft'" v-model="row.countedQuantity" :min="0" :precision="0" :step="1" :max="2147483647" :controls="false" :disabled="busy" :aria-label="row.name+'实盘数量'" placeholder="请填写" /><span v-else>{{row.countedQuantity??'—'}}</span></template>
+      <template #difference="{row}"><span v-if="row.countedQuantity!=null" :class="row.countedQuantity<row.expectedQuantity?'negative':'positive'">{{formatQuantity(row.countedQuantity-row.expectedQuantity)}}</span><span v-else>待填写</span></template>
+    </ProductTable>
     <el-pagination v-model:current-page="page" :page-size="PRODUCT_PAGE_SIZE" :total="sortedLines.length" layout="total, prev, pager, next" aria-label="盘库商品分页" />
     <div v-if="current.status==='Draft'" class="toolbar" style="margin-top:22px;margin-bottom:0"><span class="muted">{{missing?`还有 ${missing} 种商品待填写`:'已填写完整，可确认盘库'}}</span><el-button class="right" :disabled="busy" @click="cancel">取消盘库</el-button><el-button type="primary" :disabled="missing>0||changed" :loading="busy" @click="confirm">确认并更新库存</el-button></div>
   </section>
