@@ -3,180 +3,251 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { api, getErrorMessage } from '@/api/http'
 import type { ApiResponse, DailyMovements, Product } from '@/types/api'
 import MovementQuickActions from '@/components/MovementQuickActions.vue'
-import { PRODUCT_PAGE_SIZE, formatQuantity, matchesProduct, productLabel, localDate } from '@/utils/inventory'
+import { PRODUCT_PAGE_SIZE, formatQuantity, isLowStock, matchesProduct, productLabel } from '@/utils/inventory'
 import { productStyle } from '@/utils/productColors'
-import { calendarDates, calendarPadding, dateLabel, movementIndex, overviewProducts, summarizeDay } from '@/utils/movementOverview'
+import { calendarDates, movementIndex, overviewProducts, readOverviewDays } from '@/utils/movementOverview'
 
-import ProductTable from '@/components/ProductTable.vue'
-import { productTableColumns, type TableColumn } from '@/utils/tableColumns'
-const columns: TableColumn[] = [
-  ...productTableColumns('product.'),
-  { key: 'inbound', label: '入库', width: 110, minWidth: 90 },
-  { key: 'outbound', label: '出库', width: 110, minWidth: 90 },
-  { key: 'actions', label: '今天记一笔', width: 135, minWidth: 125, fixed: 'right' },
-]
 const props = defineProps<{ products: Product[]; refreshKey: number; entryLocked?: boolean; category?: string | null }>()
 const emit = defineEmits<{ entry: [kind: 'Inbound' | 'Outbound', productId?: string] }>()
+const daysStorageKey = 'ls-inventory:workbench-days'
+function savedDays() {
+  try { return readOverviewDays(localStorage.getItem(daysStorageKey)) } catch { return 7 }
+}
+const days = ref<number | undefined>(savedDays())
+const selectedIds = ref<string[]>([]), search = ref(''), onlyWithActivity = ref(false)
+const data = ref<DailyMovements>(), loading = ref(false), error = ref('')
+const page = ref(1), pageSize = PRODUCT_PAGE_SIZE
+const tableScroll = ref<HTMLElement>()
+const tableElement = ref<HTMLTableElement>(), horizontalScroll = ref<HTMLElement>()
+const tableHeaderScroll = ref<HTMLElement>()
+const scrollContentWidth = ref(0)
+const pageHeaderHeight = ref(0)
+let resizeObserver: ResizeObserver | undefined
+let followRightEdge = true
+const mirroredScrollPositions = new WeakMap<HTMLElement, number>()
+let userScrollRevision = 0, measurementRevision = 0, measuredClientWidth = 0
+const productDetailId = ref(''), productDetailOpen = ref(false)
+const detailProduct = computed(() => props.products.find(p => p.id === productDetailId.value))
+const options = computed(() => props.products.filter(p => matchesProduct(p, search.value)))
+const shownProducts = computed(() => overviewProducts(props.products, data.value?.entries ?? [], selectedIds.value, onlyWithActivity.value))
+const pagedProducts = computed(() => shownProducts.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+const dates = computed(() => data.value ? calendarDates(data.value.from, data.value.to) : [])
+const index = computed(() => movementIndex(data.value?.entries ?? []))
+const tableRows = computed(() => pagedProducts.value.map(product => ({
+  product,
+  lowStock: isLowStock(product),
+  days: dates.value.map(date => ({ date, movement: index.value.get(date)?.get(product.id) })),
+})))
+const movementColumns = computed(() => {
+  const lengths = new Map(dates.value.map(date => [date, { outbound: 1, inbound: 1 }]))
+  const productIds = new Set(pagedProducts.value.map(product => product.id))
+  for (const entry of data.value?.entries ?? []) {
+    const day = lengths.get(entry.date)
+    if (!day || !productIds.has(entry.productId)) continue
+    day.outbound = Math.max(day.outbound, formatQuantity(entry.outbound).length)
+    day.inbound = Math.max(day.inbound, formatQuantity(entry.inbound).length)
+  }
+  return dates.value.flatMap(date => (['outbound', 'inbound'] as const).map(direction => ({
+    key: `${date}-${direction}`,
+    // Reserve cell padding/borders; actions have their own trailing column.
+    width: `max(var(--quantity-column-width), calc(${lengths.get(date)![direction]}ch + 12px))`,
+  })))
+})
+const matrixStyle = computed(() => {
+  const widths = new Map<string, number>()
+  for (const column of movementColumns.value) widths.set(column.width, (widths.get(column.width) ?? 0) + 1)
+  return {
+    '--date-columns-width': [...widths].map(([width, count]) => `${count} * ${width}`).join(' + ') || '0px',
+    '--date-column-count': movementColumns.value.length || 1,
+    '--stock-character-count': Math.max(1, ...pagedProducts.value.map(product => formatQuantity(product.quantity).length)),
+  }
+})
+
 function startEntry(kind: 'Inbound' | 'Outbound', productId?: string) {
   if (props.entryLocked) return
   productDetailOpen.value = false
   emit('entry', kind, productId ?? (selectedIds.value.length === 1 ? selectedIds.value[0] : undefined))
 }
+function scrollToToday() {
+  if (tableScroll.value) writeScrollPosition(tableScroll.value, tableScroll.value.scrollWidth)
+  if (horizontalScroll.value) writeScrollPosition(horizontalScroll.value, horizontalScroll.value.scrollWidth)
+  syncHeaderScroll()
+  followRightEdge = true
+}
+function writeScrollPosition(element: HTMLElement, left: number) {
+  if (Math.abs(element.scrollLeft - left) <= 0.5) return
+  element.scrollLeft = left
+  // Scroll events arrive later. An echoed write must never pull an active drag back.
+  mirroredScrollPositions.set(element, element.scrollLeft)
+}
+function syncHeaderScroll() {
+  if (tableHeaderScroll.value && tableScroll.value && Math.abs(tableHeaderScroll.value.scrollLeft - tableScroll.value.scrollLeft) > 0.5)
+    tableHeaderScroll.value.scrollLeft = tableScroll.value.scrollLeft
+}
+function syncHorizontalScroll(source: 'table' | 'bar') {
+  const from = source === 'table' ? tableScroll.value : horizontalScroll.value
+  if (!from) return
+  const mirrored = mirroredScrollPositions.get(from)
+  if (mirrored != null && Math.abs(from.scrollLeft - mirrored) <= 0.5) return
+  mirroredScrollPositions.delete(from)
+  userScrollRevision++
+  followRightEdge = from.scrollWidth - from.clientWidth - from.scrollLeft <= 1
+  alignHorizontalScroll(source)
+}
+function alignHorizontalScroll(source: 'table' | 'bar') {
+  const from = source === 'table' ? tableScroll.value : horizontalScroll.value
+  const to = source === 'table' ? horizontalScroll.value : tableScroll.value
+  if (!from || !to) return
+  const max = Math.max(0, from.scrollWidth - from.clientWidth)
+  const targetMax = Math.max(0, to.scrollWidth - to.clientWidth)
+  const targetLeft = max ? from.scrollLeft / max * targetMax : 0
+  writeScrollPosition(to, targetLeft)
+  syncHeaderScroll()
+}
+async function measureTable() {
+  if (!tableScroll.value) return
+  const current = ++measurementRevision, scrollRevision = userScrollRevision
+  const widthChanged = scrollContentWidth.value !== tableScroll.value.scrollWidth || measuredClientWidth !== tableScroll.value.clientWidth
+  scrollContentWidth.value = tableScroll.value.scrollWidth
+  measuredClientWidth = tableScroll.value.clientWidth
+  pageHeaderHeight.value = tableScroll.value.closest('.workspace')?.querySelector('.workspace-header')?.getBoundingClientRect().height ?? 0
+  if (!widthChanged) return
+  await nextTick()
+  if (current !== measurementRevision || scrollRevision !== userScrollRevision) return
+  if (followRightEdge) scrollToToday()
+  else alignHorizontalScroll('table')
+}
 function focusToday(productId: string) {
-  customRange.value = false; days.value = 1; selectedIds.value = [productId]; onlyWithActivity.value = false
-  detailDate.value = localDate(); detailPage.value = 1
+  selectedIds.value = [productId]; onlyWithActivity.value = false; page.value = 1
+  if (days.value == null || !Number.isInteger(days.value) || days.value < 1 || days.value > 367) days.value = 7
+  void nextTick(() => { scrollToToday(); if (tableScroll.value) tableScroll.value.scrollTop = 0 })
 }
 defineExpose({ focusToday })
-const days = ref<number | undefined>(7), view = ref<'calendar' | 'cards'>('calendar')
-const customRange = ref(false), dateRange = ref<[string, string] | null>(null)
-const selectedIds = ref<string[]>([]), search = ref(''), onlyWithActivity = ref(false)
-function setDays(value: number) { customRange.value = false; days.value = value }
-function disableFuture(date: Date) { return localDate(date) > localDate() }
-watch(() => props.category, () => { selectedIds.value = []; search.value = ''; onlyWithActivity.value = false; detailPage.value = 1 }, { flush: 'sync' })
-const data = ref<DailyMovements>(), loading = ref(false), error = ref('')
-const detailDate = ref(''), detailPage = ref(1), pageSize = PRODUCT_PAGE_SIZE
-const dateRegion = ref<HTMLElement>()
-const productDetailId = ref(''), productDetailOpen = ref(false)
-const detailProduct = computed(() => props.products.find(p => p.id === productDetailId.value))
+function setDays(value: number) { days.value = value }
 function showProduct(product: Product) { productDetailId.value = product.id; productDetailOpen.value = true }
-
-const options = computed(() => props.products.filter(p => matchesProduct(p, search.value)))
-const shownProducts = computed(() => overviewProducts(props.products, data.value?.entries ?? [], selectedIds.value, onlyWithActivity.value))
-const dates = computed(() => data.value ? calendarDates(data.value.from, data.value.to) : [])
-const padding = computed(() => calendarPadding(dates.value[0]))
-const index = computed(() => movementIndex(data.value?.entries ?? []))
-const calendarDays = computed(() => dates.value.map(date => ({ date, items: shownProducts.value.flatMap(product => {
-  const movement = index.value.get(date)?.get(product.id)
-  return movement ? [{ product, movement }] : []
-}) })).map(day => ({ ...day, summary: summarizeDay(day.items) })))
-const details = computed(() => {
-  if (!dates.value.includes(detailDate.value)) return []
-  if (onlyWithActivity.value) return calendarDays.value.find(day => day.date === detailDate.value)?.items ?? []
-  return shownProducts.value.map(product => ({ product, movement: index.value.get(detailDate.value)?.get(product.id)
-    ?? { date: detailDate.value, productId: product.id, inbound: 0, outbound: 0, inboundCount: 0, outboundCount: 0 } }))
-})
-const summaryDays = computed(() => calendarDays.value)
-const detailSummary = computed(() => summarizeDay(details.value))
-const pagedDetails = computed(() => details.value.slice((detailPage.value - 1) * pageSize, detailPage.value * pageSize))
-watch([detailDate, selectedIds, onlyWithActivity], () => { detailPage.value = 1 }, { deep: true })
-watch(() => details.value.length, count => { detailPage.value = Math.min(detailPage.value, Math.max(1, Math.ceil(count / pageSize))) })
-watch(() => [detailDate.value, view.value, data.value?.from, data.value?.to], async () => {
-  await nextTick()
-  const region = dateRegion.value
-  const selected = region?.querySelector<HTMLElement>('[aria-pressed="true"]')
-  if (!region || !selected) return
-  const bounds = region.getBoundingClientRect(), target = selected.getBoundingClientRect()
-  if (target.top < bounds.top + 36 || target.bottom > bounds.bottom)
-    region.scrollTop += target.top - bounds.top - 40
-})
-function compactCount(value: number) { return value >= 10000 ? new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value) : formatQuantity(value) }
-const counts = computed(() => calendarDays.value.reduce((sum, day) => {
-  for (const item of day.items) { sum.inbound += item.movement.inboundCount; sum.outbound += item.movement.outboundCount }
-  return sum
-}, { inbound: 0, outbound: 0 }))
 function filterProducts(value: string) { search.value = value }
 function closeSearch(visible: boolean) { if (!visible) search.value = '' }
-function showDate(date: string) { detailDate.value = date; detailPage.value = 1 }
-function dayAria(day: (typeof calendarDays.value)[number]) { return `${day.date}，${day.items.length}种商品，入库${day.summary.inboundCount}笔，出库${day.summary.outboundCount}笔，查看商品明细` }
+
+watch(() => props.category, () => { selectedIds.value = []; search.value = ''; onlyWithActivity.value = false; page.value = 1 }, { flush: 'sync' })
+watch([selectedIds, onlyWithActivity], () => { page.value = 1 }, { deep: true })
+watch(() => shownProducts.value.length, count => { page.value = Math.min(page.value, Math.max(1, Math.ceil(count / pageSize))) })
+watch(page, () => { tableScroll.value?.scrollIntoView?.({ block: 'start' }) })
+// A new range opens at today; background refreshes retain the scroll position.
+watch([tableScroll, () => data.value?.from, () => data.value?.to], () => { if (data.value) void nextTick(scrollToToday) })
+watch([tableScroll, tableElement, horizontalScroll, tableHeaderScroll], () => {
+  resizeObserver?.disconnect()
+  if (!tableScroll.value || !tableElement.value || !horizontalScroll.value) return
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => { void measureTable() })
+    resizeObserver.observe(tableScroll.value)
+    resizeObserver.observe(tableElement.value)
+    const pageHeader = tableScroll.value.closest('.workspace')?.querySelector('.workspace-header')
+    if (pageHeader) resizeObserver.observe(pageHeader)
+  }
+  void measureTable()
+})
+watch(days, value => {
+  if (value != null && Number.isInteger(value) && value >= 1 && value <= 367) {
+    try { localStorage.setItem(daysStorageKey, String(value)) } catch { /* Storage may be disabled. */ }
+  }
+})
+
 let sequence = 0
 let loadedQuery = ''
 async function loadHistory() {
   const current = ++sequence
   error.value = ''; loading.value = false
-  const query = JSON.stringify([customRange.value ? dateRange.value : days.value, props.category ?? null])
+  const query = JSON.stringify([days.value, props.category ?? null])
   if (loadedQuery !== query) data.value = undefined
-  if (!customRange.value && (days.value == null || !Number.isInteger(days.value) || days.value < 1 || days.value > 367)) {
+  if (days.value == null || !Number.isInteger(days.value) || days.value < 1 || days.value > 367) {
     data.value = undefined; error.value = '请输入 1～367 之间的整数天数'; return
-  }
-  if (customRange.value && (!dateRange.value || dateRange.value.length !== 2)) {
-    error.value = '请选择开始日期和结束日期'; return
-  }
-  if (customRange.value && dateRange.value) {
-    const [from, to] = dateRange.value
-    if (to < from || to > localDate() || (Date.parse(to) - Date.parse(from)) / 86400000 > 366) {
-      error.value = '请选择不超过 367 天且不晚于今天的日期范围'; return
-    }
   }
   loading.value = true
   try {
-    const result = (await api.get<ApiResponse<DailyMovements>>('/api/v1/movements/daily', { params: { ...(customRange.value ? { from: dateRange.value![0], to: dateRange.value![1] } : { days: days.value }), category: props.category ?? undefined } })).data.data
-    if (current === sequence) {
-      data.value = result
-      loadedQuery = query
-      if (!detailDate.value || detailDate.value < result.from || detailDate.value > result.to) {
-        detailDate.value = result.to; detailPage.value = 1
-      }
-    }
+    const result = (await api.get<ApiResponse<DailyMovements>>('/api/v1/movements/daily', { params: { days: days.value, category: props.category ?? undefined } })).data.data
+    if (current === sequence) { data.value = result; loadedQuery = query }
   } catch (e) { if (current === sequence) { data.value = undefined; error.value = getErrorMessage(e) } }
   finally { if (current === sequence) loading.value = false }
 }
-watch(() => [days.value, customRange.value, dateRange.value, props.category, props.refreshKey], () => { void loadHistory() }, { immediate: true })
-onBeforeUnmount(() => { sequence++ })
+watch(() => [days.value, props.category, props.refreshKey], () => { void loadHistory() }, { immediate: true })
+onBeforeUnmount(() => { sequence++; measurementRevision++; resizeObserver?.disconnect() })
 </script>
 
 <template>
   <section class="panel movement-overview" aria-label="出入库概览">
-    <div class="overview-controls">
-    <div class="overview-heading">
-      <div class="overview-heading-main">
-        <div class="overview-title-row"><h2>出入库</h2><el-radio-group v-model="view" aria-label="出入库展示方式"><el-radio-button value="calendar">日历</el-radio-button><el-radio-button value="cards">每日汇总卡片</el-radio-button></el-radio-group></div>
-      </div>
-    </div>
-    <div class="overview-entry-actions"><el-button type="primary" :disabled="entryLocked" @click="startEntry('Inbound')">记入库</el-button><el-button class="outbound-entry" :disabled="entryLocked" @click="startEntry('Outbound')">记出库</el-button></div>
     <div class="overview-filters">
-      <el-button-group aria-label="常用日期范围"><el-button :type="!customRange && days === 1 ? 'primary' : 'default'" @click="setDays(1)">今天</el-button><el-button :type="!customRange && days === 7 ? 'primary' : 'default'" @click="setDays(7)">近7天</el-button><el-button :type="!customRange && days === 30 ? 'primary' : 'default'" @click="setDays(30)">近30天</el-button></el-button-group>
-      <div class="days-filter"><span>最近</span><el-input-number v-model="days" @change="customRange=false" :min="1" :max="367" :precision="0" :step="1" controls-position="right" aria-label="查询最近多少天的出入库" /><span>天</span></div>
-      <el-checkbox v-model="customRange">指定日期</el-checkbox>
-      <el-date-picker v-if="customRange" v-model="dateRange" type="daterange" value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" range-separator="至" :disabled-date="disableFuture" aria-label="出入库日期范围" class="overview-date-range" />
+      <el-button-group aria-label="常用展示天数"><el-button size="small" :type="days === 1 ? 'primary' : 'default'" @click="setDays(1)">今天</el-button><el-button size="small" :type="days === 7 ? 'primary' : 'default'" @click="setDays(7)">近7天</el-button><el-button size="small" :type="days === 30 ? 'primary' : 'default'" @click="setDays(30)">近30天</el-button></el-button-group>
+      <div class="days-filter" title="展示天数包含今天"><span>最近</span><el-input-number v-model="days" size="small" :min="1" :max="367" :precision="0" :step="1" controls-position="right" aria-label="展示最近多少天的出入库" /><span>天</span></div>
       <div class="overview-product-filters">
-      <slot name="category-filter" />
-      <div class="product-filter"><label for="overview-product">商品</label>
-      <el-select id="overview-product" v-model="selectedIds" multiple collapse-tags collapse-tags-tooltip :max-collapse-tags="1" filterable :filter-method="filterProducts" @visible-change="closeSearch" clearable placeholder="全部商品，可进一步筛选" aria-label="概览商品筛选" class="overview-product-filter" popper-class="product-options">
-        <el-option v-for="p in options" :key="p.id" :value="p.id" :label="productLabel(p)" :style="productStyle(p.name)"><span class="product-name">{{p.name}}</span><span class="product-spec"> · {{p.productSpecification || '无产品规格'}} · {{p.rawMaterialSpecification || '无原料规格'}} · </span><b class="product-unit">{{p.unit}}</b><span v-if="p.note"> · {{p.note}}</span></el-option>
-      </el-select>
+        <slot name="category-filter" />
+        <div class="product-filter"><label for="overview-product">商品</label>
+          <el-select id="overview-product" v-model="selectedIds" size="small" multiple collapse-tags collapse-tags-tooltip :max-collapse-tags="1" filterable :filter-method="filterProducts" @visible-change="closeSearch" clearable placeholder="全部商品" aria-label="概览商品筛选" class="overview-product-filter" popper-class="product-options">
+            <el-option v-for="p in options" :key="p.id" :value="p.id" :label="productLabel(p)" :style="productStyle(p.name)"><span class="product-name">{{p.name}}</span><span class="product-spec"> · {{p.productSpecification || '无产品规格'}} · {{p.rawMaterialSpecification || '无原料规格'}} · </span><b class="product-unit">{{p.unit}}</b><span v-if="p.note"> · {{p.note}}</span></el-option>
+          </el-select>
+        </div>
       </div>
-      </div>
-      <el-checkbox v-model="onlyWithActivity">只看有出入库的商品</el-checkbox>
-    </div>
+      <el-checkbox v-model="onlyWithActivity" size="small">只看有出入库</el-checkbox>
     </div>
     <slot name="receipt" />
     <div class="overview-body" v-loading="loading" :aria-busy="loading">
       <div v-if="error" class="overview-error" role="alert"><span>{{error}}</span><el-button @click="loadHistory">重新查询</el-button></div>
       <template v-else-if="data">
-        <div class="range-line"><span>{{data.from}} 至 {{data.to}}<template v-if="data.to === localDate()"> · 含今天</template></span><span>{{shownProducts.length}} 种商品 · 入库 {{formatQuantity(counts.inbound)}} 次 · 出库 {{formatQuantity(counts.outbound)}} 次</span></div>
-        <div class="overview-legend"><span><i class="legend-dot" />商品颜色与商品档案一致</span><span class="inbound">入 = 入库</span><span class="outbound">出 = 出库</span><span>不含库存导入和盘库调整 · — 表示无出入库</span></div>
-        <div v-if="view === 'calendar'" ref="dateRegion" class="calendar-scroll" tabindex="0" role="region" aria-label="出入库日历，点击日期查看明细">
-          <div class="calendar-grid" :class="{ 'single-day': dates.length === 1 }">
-            <div v-for="weekday in ['一','二','三','四','五','六','日']" :key="weekday" class="weekday">周{{weekday}}</div>
-            <div v-for="blank in padding" :key="'blank-'+blank" class="calendar-blank" aria-hidden="true" />
-            <button v-for="day in calendarDays" :key="day.date" type="button" class="calendar-day date-tile" :class="{ today: day.date === localDate(), selected: day.date === detailDate }" :aria-label="dayAria(day)" :aria-pressed="day.date === detailDate" @click="showDate(day.date)">
-              <span class="day-heading"><time :datetime="day.date"><span class="date-full">{{dateLabel(day.date)}}</span><span class="date-short">{{Number(day.date.slice(8))}}</span></time><span v-if="day.date === localDate()" class="today-label">今天</span></span>
-              <span class="day-product-count">{{compactCount(day.items.length)}}<small> <span class="count-full">种商品</span><span class="count-short">种</span></small></span>
-              <span class="day-counts"><span class="inbound">入 {{compactCount(day.summary.inboundCount)}}<span class="count-suffix"> 笔</span></span><span class="outbound">出 {{compactCount(day.summary.outboundCount)}}<span class="count-suffix"> 笔</span></span></span>
-            </button>
-          </div>
+        <div v-if="shownProducts.length" class="movement-table-frame" :style="{ '--table-header-top': pageHeaderHeight + 'px' }">
+        <!-- Keep the visible header outside horizontal overflow so it sticks to the page, with matching columns and scroll position. -->
+        <div ref="tableHeaderScroll" class="movement-table-header" aria-hidden="true">
+          <table class="movement-table-heading movement-matrix" :style="matrixStyle">
+            <colgroup><col class="product-column" /><col class="stock-column" /><col v-for="column in movementColumns" :key="column.key" :style="{ width: `calc(${column.width} + var(--date-extra-width))` }" /><col class="action-column" /></colgroup>
+            <thead>
+              <tr class="date-header">
+                <th rowspan="2" class="fixed-product">商品</th>
+                <th rowspan="2" class="fixed-stock">库存数量</th>
+                <th v-for="date in dates" :key="date" colspan="2" class="date-group" :class="{ 'today-heading': date === data.to }"><time :datetime="date">{{date}}</time><span v-if="date === data.to" class="today-label">今天</span></th>
+                <th rowspan="2" class="action-cell">出入库</th>
+              </tr>
+              <tr class="direction-header">
+                <template v-for="date in dates" :key="date"><th class="outbound day-start" :class="{ 'today-heading': date === data.to }">出</th><th class="inbound" :class="{ 'today-heading': date === data.to }">入</th></template>
+              </tr>
+            </thead>
+          </table>
         </div>
-        <div v-else-if="view === 'cards'" ref="dateRegion" class="summary-scroll" tabindex="0" role="region" aria-label="每日汇总卡片，日期从早到晚排列">
-          <div class="summary-grid">
-            <button v-for="day in summaryDays" :key="day.date" type="button" class="summary-card date-tile" :class="{ today: day.date === localDate(), selected: day.date === detailDate }" :aria-label="dayAria(day)" :aria-pressed="day.date === detailDate" @click="showDate(day.date)">
-              <span class="day-heading"><time :datetime="day.date">{{day.date}}</time><span v-if="day.date === localDate()" class="today-label">今天</span></span>
-              <span class="day-product-count">{{compactCount(day.items.length)}}<small> 种商品</small></span>
-              <span class="day-counts"><span class="inbound">入库 {{compactCount(day.summary.inboundCount)}} 笔</span><span class="outbound">出库 {{compactCount(day.summary.outboundCount)}} 笔</span></span>
-            </button>
-          </div>
+        <div ref="tableScroll" class="movement-table-scroll" tabindex="0" role="region" aria-label="商品每日出入库表，左右滚动查看日期，商品、库存数量和出入库列保持固定" @scroll.passive="syncHorizontalScroll('table')">
+          <table ref="tableElement" class="movement-table movement-matrix" :style="matrixStyle">
+            <caption class="sr-only">商品每日出入库数量。日期从早到晚排列，今天在日期列的最后，最右侧固定的出入库列可登记今天的出入库；出、入单元格空白表示该项数量为零。当前库存为此刻结存，每日出入库不含库存导入和盘库调整。</caption>
+            <colgroup><col class="product-column" /><col class="stock-column" /><col v-for="column in movementColumns" :key="column.key" :style="{ width: `calc(${column.width} + var(--date-extra-width))` }" /><col class="action-column" /></colgroup>
+            <thead class="sr-only">
+              <tr class="date-header">
+                <th rowspan="2" scope="col" class="fixed-product">商品</th>
+                <th rowspan="2" scope="col" class="fixed-stock">库存数量</th>
+                <th v-for="date in dates" :key="date" colspan="2" scope="colgroup" class="date-group" :class="{ 'today-heading': date === data.to }"><time :datetime="date">{{date}}</time><span v-if="date === data.to" class="today-label">今天</span></th>
+                <th rowspan="2" scope="col" class="action-cell">出入库</th>
+              </tr>
+              <tr class="direction-header">
+                <template v-for="date in dates" :key="date"><th scope="col" class="outbound day-start" :class="{ 'today-heading': date === data.to }">出</th><th scope="col" class="inbound" :class="{ 'today-heading': date === data.to }">入</th></template>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in tableRows" :key="row.product.id" :data-product-id="row.product.id" :style="productStyle(row.product.name)" :class="{ 'low-stock-row': row.lowStock }">
+                <th scope="row" class="fixed-product product-cell">
+                  <button type="button" class="product-detail-link product-name" :aria-label="'查看商品资料：'+productLabel(row.product)" @click="showProduct(row.product)">{{row.product.name}}</button>
+                  <div class="product-meta"><span class="product-spec">{{row.product.productSpecification || '无产品规格'}} · {{row.product.rawMaterialSpecification || '无原料规格'}}</span> · <b class="product-unit">{{row.product.unit}}</b><span v-if="row.product.note" class="product-note"> · {{row.product.note}}</span></div>
+                </th>
+                <td class="fixed-stock stock-cell"><strong class="stock-quantity">{{formatQuantity(row.product.quantity)}}</strong><span v-if="row.lowStock" class="stock-warning">库存不足</span></td>
+                <template v-for="day in row.days" :key="day.date">
+                  <td class="quantity-cell outbound day-start" :class="{ 'today-cell': day.date === data.to }"><div class="movement-value"><strong :title="day.movement?.outbound ? formatQuantity(day.movement.outbound) : undefined">{{day.movement?.outbound ? formatQuantity(day.movement.outbound) : ''}}</strong></div></td>
+                  <td class="quantity-cell inbound" :class="{ 'today-cell': day.date === data.to }"><div class="movement-value"><strong :title="day.movement?.inbound ? formatQuantity(day.movement.inbound) : undefined">{{day.movement?.inbound ? formatQuantity(day.movement.inbound) : ''}}</strong></div></td>
+                </template>
+                <td class="action-cell"><div class="row-actions">
+                  <el-button class="row-action outbound-action" size="small" :disabled="entryLocked || !row.product.isActive" :aria-label="row.product.name+'，今天出库'" @click="startEntry('Outbound', row.product.id)">出</el-button>
+                  <el-button class="row-action inbound-action" size="small" :disabled="entryLocked || !row.product.isActive" :aria-label="row.product.name+'，今天入库'" @click="startEntry('Inbound', row.product.id)">入</el-button>
+                </div></td>
+              </tr>
+            </tbody>
+          </table>
         </div>
-        <section class="day-details" aria-label="所选日期商品明细">
-          <div class="detail-heading"><div><h3>{{detailDate}} <span v-if="detailDate === localDate()" class="today-label">今天</span> · 商品明细</h3><p class="muted" aria-live="polite">{{details.length}} 种商品 · 入库 {{formatQuantity(detailSummary.inboundCount)}} 笔 · 出库 {{formatQuantity(detailSummary.outboundCount)}} 笔</p></div></div>
-          <ProductTable v-if="details.length" class="day-detail-table" storage-key="dashboard-day-details" :columns="columns" :data="pagedDetails" row-key="product.id" :row-style="({row}) => productStyle(row.product.name)">
-            <template #name="{row}"><button type="button" class="product-detail-link product-name" @click="showProduct(row.product)" :aria-label="'查看商品资料：'+productLabel(row.product)">{{row.product.name}}</button></template>
-            <template #category="{row}">{{row.product.category || '未分类'}}</template>
-            <template #inbound="{row}"><strong class="inbound">{{formatQuantity(row.movement.inbound)}}</strong><small class="movement-count">{{row.movement.inboundCount}} 笔</small></template>
-            <template #outbound="{row}"><strong class="outbound">{{formatQuantity(row.movement.outbound)}}</strong><small class="movement-count">{{row.movement.outboundCount}} 笔</small></template>
-            <template #actions="{row}"><MovementQuickActions :product="row.product" :disabled="entryLocked" @entry="startEntry" /></template>
-          </ProductTable>
-          <div v-else class="detail-empty"><p>当天没有符合筛选条件的出入库记录</p><span>可选择其他日期，或用上方“记入库 / 记出库”登记今天的进出。</span></div>
-          <el-pagination v-if="details.length" v-model:current-page="detailPage" :page-size="pageSize" :total="details.length" :pager-count="5" layout="total, prev, pager, next" aria-label="当日商品明细分页" />
-        </section>
+        <div ref="horizontalScroll" class="table-horizontal-scroll" tabindex="0" role="region" aria-label="日期横向滚动条" @scroll.passive="syncHorizontalScroll('bar')"><div :style="{ width: scrollContentWidth + 'px' }" /></div>
+        </div>
+        <div v-else class="detail-empty"><p>没有符合筛选条件的商品</p><span>可调整类目或商品筛选，或取消“只看有出入库”。</span></div>
+        <div class="table-footer"><p class="muted">左右滚动查看往日 · 商品、库存与出入库列固定 · 不含库存导入和盘库调整</p><el-pagination v-if="shownProducts.length" v-model:current-page="page" :page-size="pageSize" :total="shownProducts.length" :pager-count="5" layout="total, prev, pager, next" aria-label="出入库商品分页" /></div>
       </template>
       <p v-else class="muted loading-message">正在查询出入库…</p>
     </div>
@@ -189,14 +260,20 @@ onBeforeUnmount(() => { sequence++ })
 </template>
 
 <style scoped>
-.overview-date-range{max-width:100%;flex-basis:320px!important;flex-grow:0!important}
-.overview-controls{display:grid;grid-template-columns:minmax(0,1fr) 264px;gap:20px 24px;margin-bottom:12px}.overview-heading{grid-column:1;grid-row:1}.overview-heading-main{flex:1;min-width:0}.overview-title-row{display:flex;align-items:center;gap:20px;flex-wrap:wrap}.overview-title-row h2{flex-shrink:0}.overview-title-row .el-radio-group{flex-shrink:0}.overview-entry-actions{grid-column:2;grid-row:1 / span 2;display:flex;gap:12px;min-height:110px}.overview-entry-actions .el-button{flex:1;min-width:0;margin:0;height:auto;padding:18px 12px;font-size:22px;font-weight:700}.outbound-entry{color:#955625;border-color:#dfc5b0;background:#fffaf4}.movement-overview{min-width:0;container-type:inline-size}.overview-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}.overview-heading h2{margin:0}.overview-heading p{margin:8px 0 0;font-size:13px}
-.overview-filters{grid-column:1;grid-row:2;display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0}.days-filter{display:flex;align-items:center;gap:8px}.days-filter .el-input-number{width:106px}.overview-product-filters{display:flex;align-items:center;gap:12px;flex:1 1 490px;min-width:0;max-width:820px}.product-filter{display:flex;align-items:center;gap:8px;flex:1;min-width:220px}.product-filter label{font-weight:600;white-space:nowrap}.overview-product-filter{flex:1;min-width:0}
-.overview-body{min-height:120px}.range-line{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;color:#496878;font-size:13px;margin-bottom:10px}.overview-legend{display:flex;align-items:center;flex-wrap:wrap;gap:8px 18px;color:#6d8292;font-size:12px;margin-bottom:16px}.legend-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#548ac0;margin-right:5px}.inbound{color:#247256}.outbound{color:#955625}
-.date-short,.count-short{display:none}.calendar-scroll,.summary-scroll{max-height:310px;overflow:auto;border:1px solid #dce7ee;border-radius:10px;scrollbar-gutter:stable;position:relative}.calendar-grid{min-width:840px;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));background:#e1ecf2;gap:1px}.weekday{position:sticky;top:0;z-index:2;text-align:center;padding:9px 0;background:#eaf4fa;color:#476777;font-size:12px}.calendar-blank{background:#f8fafc}.date-tile{appearance:none;border:0;background:#fff;text-align:left;color:#34596f;cursor:pointer;min-width:0;height:132px;padding:8px;display:flex;flex-direction:column;gap:4px;position:relative}.date-tile:hover{background:#f1f8fc}.date-tile.today{background:#f4faff}.date-tile.selected{background:#eaf5fc;box-shadow:inset 0 0 0 2px #367ca2}.date-tile:focus-visible{outline:3px solid #235a7c;outline-offset:-4px;z-index:1}.day-heading{display:flex;align-items:center;justify-content:space-between;gap:3px;flex-wrap:wrap;font-size:13px;font-weight:700;min-height:38px;flex-shrink:0;align-content:flex-start}.today-label{font-size:11px;background:#3685a7;color:#fff;padding:2px 5px;border-radius:4px}.day-product-count{font-size:22px;font-weight:700}.day-product-count small{font-size:12px;font-weight:400}.day-counts{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;margin-top:auto;font-size:16px;font-weight:700;line-height:1.5}.day-counts>span{overflow-wrap:anywhere}.day-counts>.outbound{text-align:right}.calendar-grid.single-day{min-width:0;grid-template-columns:minmax(0,1fr)}.single-day .weekday,.single-day .calendar-blank{display:none}.summary-scroll{padding:10px;background:#f7fafc}.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.summary-card{border:1px solid #dce7ee;border-radius:8px}
-.day-details{border-top:1px solid #dce7ee;margin-top:22px;padding-top:20px;min-width:0}.detail-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px}.detail-heading h3{margin:0 0 7px;font-size:16px}.detail-heading p{margin:0}.product-detail-link{display:block;border:0;padding:0;background:none;text-align:left;color:#285c7b;font-weight:600;cursor:pointer;font-size:14px;line-height:1.5;overflow-wrap:anywhere}.product-detail-link:hover{text-decoration:underline}.product-detail-link:focus-visible{outline:2px solid #367ca2;outline-offset:2px}.movement-count{display:inline-block;font-size:12px;color:#657b8b;margin-left:6px;white-space:nowrap}.day-detail-table :deep(.movement-actions){margin-top:0}.detail-empty{padding:25px 16px;background:#f8fafc;border-radius:8px;text-align:center;color:#657b8b}.detail-empty p{margin:0 0 8px;font-size:14px}.detail-empty span{font-size:12px}.product-full-details{margin:0 0 20px;line-height:1.7}.product-full-details dt{color:#657b8b;font-size:12px;margin-top:12px}.product-full-details dd{margin:3px 0 0;overflow-wrap:anywhere;font-size:15px}
-.overview-error{display:flex;align-items:center;gap:16px;color:#af4350;padding:24px 0}.loading-message{padding:20px 0}
-@container(max-width:850px){.overview-controls{grid-template-columns:minmax(0,1fr);gap:16px}.overview-entry-actions{grid-column:1;grid-row:2;min-height:64px;width:100%;max-width:320px;justify-self:end}.overview-entry-actions .el-button{font-size:20px}.overview-filters{grid-row:3}}
-@container(max-width:500px){.overview-entry-actions{max-width:none}}
-@media(max-width:650px){.calendar-day .date-full,.calendar-day .count-full{display:none}.calendar-day .date-short,.calendar-day .count-short{display:inline}.calendar-day .day-heading{font-size:13px}.calendar-day .day-counts>span{white-space:nowrap}.calendar-day .today-label{font-size:8px;padding:1px;white-space:nowrap}.overview-filters{gap:10px}.overview-product-filters{flex-basis:100%;flex-wrap:wrap}.product-filter{flex-basis:100%;min-width:0}.range-line{font-size:12px}.overview-legend{gap:7px 12px}.date-tile{padding:8px 4px;height:140px;gap:5px}.day-heading{font-size:11px}.today-label{font-size:10px;padding:1px 3px}.day-product-count{font-size:18px}.day-product-count small{display:block;font-size:10px}.day-counts{font-size:14px;gap:6px}.summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.summary-card{padding:12px;height:132px}.summary-card .day-product-count small{display:inline;font-size:12px}.summary-card .day-counts{font-size:14px}.summary-card .day-heading{font-size:13px}.detail-heading h3{font-size:14px}}
+.movement-overview{min-width:0;container-type:inline-size;--product-column-width:260px;--stock-column-min-width:76px;--stock-number-size:18;--quantity-column-width:60px;--action-column-width:72px;--date-header-height:32px}
+
+
+.overview-filters{display:flex;align-items:center;gap:10px;flex-wrap:nowrap;margin-bottom:12px;font-size:13px}.overview-filters>.el-button-group,.overview-filters>.el-checkbox{flex-shrink:0}.overview-filters>.el-checkbox{margin-right:0}.days-filter{display:flex;align-items:center;gap:5px;flex-shrink:0;white-space:nowrap}.days-filter .el-input-number{width:74px}.overview-product-filters{display:contents}.product-filter{display:flex;align-items:center;gap:6px;flex:1 1 190px;min-width:160px;max-width:320px}.product-filter label{font-weight:600;white-space:nowrap}.overview-product-filter{flex:1;min-width:0}
+.overview-body{min-height:120px;margin-top:12px;min-width:0}
+.movement-table-frame{position:relative;min-width:0}.movement-table-header{position:sticky;top:var(--table-header-top);z-index:10;width:100%;overflow:hidden;border:1px solid #b9d1df;border-bottom:0;border-radius:8px 8px 0 0;background:#edf6fb;box-shadow:0 2px 4px #34596f15;pointer-events:none}.movement-table-scroll{width:100%;overflow-x:auto;overflow-y:hidden;position:relative;isolation:isolate;border:1px solid #b9d1df;border-top:0;scrollbar-width:none;scroll-margin-top:calc(var(--table-header-top) + 64px)}.movement-table-scroll::-webkit-scrollbar{display:none}.movement-table-scroll:focus-visible,.table-horizontal-scroll:focus-visible{outline:2px solid #367ca2;outline-offset:2px}
+.table-horizontal-scroll{position:sticky;bottom:0;z-index:6;width:100%;height:16px;overflow-x:scroll;overflow-y:hidden;border:1px solid #b9d1df;border-top:0;border-radius:0 0 5px 5px;background:#edf5fa;scrollbar-color:#87adc6 #edf5fa;scrollbar-width:auto}.table-horizontal-scroll>div{height:1px}.table-horizontal-scroll::-webkit-scrollbar{height:14px}.table-horizontal-scroll::-webkit-scrollbar-track{background:#edf5fa}.table-horizontal-scroll::-webkit-scrollbar-thumb{background:#87adc6;border:2px solid #edf5fa;border-radius:7px}.table-horizontal-scroll::-webkit-scrollbar-thumb:hover{background:#648fa9}
+.movement-matrix{--date-extra-width:max(0px,calc((100cqw - 2px - var(--product-column-width) - var(--stock-column-width) - var(--action-column-width) - (var(--date-columns-width))) / var(--date-column-count)));width:100%;min-width:calc(var(--product-column-width) + var(--stock-column-width) + var(--date-columns-width) + var(--action-column-width));table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;--stock-column-width:max(var(--stock-column-min-width),calc(var(--stock-character-count) * 1ch * var(--stock-number-size) / 14 + 12px));--product-text-size:14px;--product-unit-size:12px}.product-column{width:var(--product-column-width)}.stock-column{width:var(--stock-column-width)}.action-column{width:var(--action-column-width)}.movement-matrix .action-cell{position:sticky;right:0;z-index:3;border-left:2px solid #9dbccc;box-shadow:-3px 0 5px #34596f10;text-align:center}.row-actions{display:flex;justify-content:center;align-items:center;gap:6px}
+.movement-matrix th,.movement-matrix td{border-right:1px solid #d4e3ec;border-bottom:1px solid #c4d8e5;padding:3px 5px;overflow-wrap:anywhere}.movement-matrix thead th{font-size:13px;background:#edf6fb;text-align:center;color:#34596f;white-space:nowrap}.date-header th{height:var(--date-header-height);padding:5px 3px}.direction-header th{height:24px;padding:3px}.movement-matrix .fixed-product{position:sticky;left:0;z-index:2;text-align:left}.movement-matrix .fixed-stock{position:sticky;left:var(--product-column-width);z-index:2;text-align:center;border-right:2px solid #9dbccc;box-shadow:3px 0 5px #34596f10}.movement-matrix thead .fixed-product,.movement-matrix thead .fixed-stock,.movement-matrix thead .action-cell{z-index:5}.movement-matrix thead .fixed-product{padding-left:8px}.movement-matrix .date-group,.movement-matrix .day-start{border-left:1px solid #b9d1df}.movement-matrix tbody tr{--row-background:var(--product-tint,#fff)}.movement-matrix tbody th,.movement-matrix tbody td{background:var(--row-background)}
+.movement-matrix .product-cell{padding:3px 8px;font-weight:400}.product-detail-link{border:0;background:transparent;padding:0;text-align:left;cursor:pointer;overflow-wrap:anywhere;line-height:20px!important}.product-detail-link:hover{text-decoration:underline}.product-meta{font-size:12px;line-height:16px}.product-meta .product-spec,.product-meta .product-note{--product-text-size:12px;font-weight:400!important;line-height:16px!important}.product-meta .product-unit{line-height:16px!important}.stock-quantity{font-size:calc(var(--stock-number-size) * 1px);white-space:nowrap;overflow-wrap:normal;line-height:22px;display:block}.stock-warning{display:block;font-size:11px;line-height:14px;font-weight:700;color:#ad3542}.movement-matrix tbody tr.low-stock-row{--row-background:#fff0f0;--product-text-color:#963744}.low-stock-row .stock-quantity{color:#ad3542}.low-stock-row .product-cell{box-shadow:inset 3px 0 #cb5a65}.low-stock-row th,.low-stock-row td{border-bottom-color:#e7bcc1}
+.movement-matrix .outbound{color:#955625}.movement-matrix .inbound{color:#247256}.quantity-cell{text-align:center}.movement-value>strong{display:block;min-width:0;font-size:14px;line-height:20px;white-space:nowrap;overflow-wrap:normal}.movement-matrix .today-heading{background:#dceef9}.today-label{display:inline-block;font-size:11px;line-height:16px;color:#276589;background:#c6e3f4;border-radius:3px;padding:0 3px;margin-left:4px}.row-action.el-button{display:inline-flex;margin:0;width:26px;min-width:26px;height:24px;padding:2px 4px;font-size:12px;font-weight:700}.outbound-action{color:#955625;border-color:#dfc5b0;background:#fffaf4}.inbound-action{color:#247256;border-color:#b3d6c5;background:#f1faf5}.row-action.is-disabled{opacity:.6}
+.table-footer{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-top:10px}.table-footer p,.table-footer .el-pagination{margin:0}.overview-error{display:flex;align-items:center;gap:16px;padding:20px;color:#ae4650}.loading-message{padding:24px 0}.detail-empty{padding:35px 20px;text-align:center;background:#f6fafc;border:1px dashed #c6dce9;border-radius:10px;color:#607b90}.detail-empty p{margin-bottom:8px}.detail-empty span{font-size:13px}.product-full-details{display:grid;grid-template-columns:90px minmax(0,1fr);gap:12px;line-height:1.7;margin:0 0 20px}.product-full-details dt{color:#657f93}.product-full-details dd{margin:0;font-weight:600;overflow-wrap:anywhere}.sr-only{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@container(max-width:850px){.overview-filters{flex-wrap:wrap}}
+@media(max-width:1100px){.movement-overview{--product-column-width:230px;--stock-column-min-width:72px}}
+@media(max-width:650px){.movement-overview{--product-column-width:clamp(88px,35cqw,148px);--stock-column-min-width:clamp(60px,20cqw,72px);--stock-number-size:16;--quantity-column-width:58px;padding:14px}.product-filter{max-width:none}.movement-matrix{--product-text-size:13px;--product-unit-size:11px}.movement-matrix th,.movement-matrix td{padding:3px 4px}.movement-matrix .product-cell{padding:3px 5px}.movement-matrix thead .fixed-stock{font-size:12px;padding:3px 2px}.product-meta,.product-meta .product-spec,.product-meta .product-note{font-size:11px;--product-text-size:11px}.table-footer .el-pagination{max-width:100%;flex-wrap:wrap}.movement-matrix .date-group{font-size:12px;padding:5px 2px}}
+@media(max-width:420px){.movement-overview{margin-inline:-8px;padding:10px}}
 </style>

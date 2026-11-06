@@ -6,6 +6,7 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
     public DbSet<AppUser> Users => Set<AppUser>();
     public DbSet<LoginSession> LoginSessions => Set<LoginSession>();
     public DbSet<Product> Products => Set<Product>();
+    public DbSet<ProductHistory> ProductHistories => Set<ProductHistory>();
     public DbSet<Movement> Movements => Set<Movement>();
     public DbSet<Stocktake> Stocktakes => Set<Stocktake>();
     public DbSet<StocktakeLine> StocktakeLines => Set<StocktakeLine>();
@@ -31,6 +32,12 @@ public sealed class InventoryDbContext(DbContextOptions<InventoryDbContext> opti
             e.ToTable(t => t.HasCheckConstraint("ck_product_warning_quantity", "warning_quantity IS NULL OR warning_quantity >= 0"));
             e.Property(x => x.Version).IsConcurrencyToken();
             e.ToTable(t => t.HasCheckConstraint("ck_product_quantity", "quantity >= 0"));
+        });
+        b.Entity<ProductHistory>(e => {
+            e.HasOne<Product>().WithMany().HasForeignKey(x => x.ProductId).OnDelete(DeleteBehavior.Restrict);
+            e.HasIndex(x => new { x.ProductId, x.ChangedAt, x.Id });
+            e.Property(x => x.Before).HasColumnName("before_info").HasColumnType("jsonb").HasConversion<ProductDetailsConverter>();
+            e.Property(x => x.After).HasColumnName("after_info").HasColumnType("jsonb").HasConversion<ProductDetailsConverter>();
         });
         b.Entity<Movement>(e => {
             e.HasIndex(x => x.RequestId).IsUnique();

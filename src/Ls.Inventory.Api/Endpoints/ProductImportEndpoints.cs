@@ -91,6 +91,7 @@ public static class ProductImportEndpoints
                         Kind = difference > 0 ? "StockGain" : "StockLoss", QuantityChange = difference, QuantityAfter = target,
                         Note = "Excel 新商品现有库存导入", StocktakeId = stocktake.Id });
                 }
+                ProductEndpoints.RecordHistory(db, c, p);
             }
             db.Products.AddRange(added);
             if (added.Count > 0) db.Stocktakes.Add(stocktake);

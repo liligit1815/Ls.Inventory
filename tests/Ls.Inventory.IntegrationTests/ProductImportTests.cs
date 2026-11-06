@@ -122,6 +122,9 @@ public sealed partial class LiteFlowTests
         Assert.Equal(fresh.GetProperty("version").GetInt64(), unchanged.GetProperty("version").GetInt64());
         var ledger = await Data(await c.GetAsync($"/api/v1/movements?productId={id}"));
         Assert.Equal(2, ledger.GetProperty("total").GetInt32());
+        var entry = Assert.Single((await Data(await c.GetAsync($"/api/v1/products/{id}/history"))).GetProperty("items").EnumerateArray());
+        Assert.Equal(10, entry.GetProperty("quantity").GetInt32());
+        Assert.Equal("说明", entry.GetProperty("after").GetProperty("note").GetString());
         Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync($"/api/v1/stocktakes/{adjusted.RequestId}")).StatusCode);
         var mixed = new ProductImportEndpoints.ImportRequest(Guid.NewGuid(), "mixed.xlsx", [row with { CurrentQuantity = null }, row with { Unit = "个", CurrentQuantity = 4, Note = "新商品备注" }]);
         var mixedResult = await Data(await c.PostAsJsonAsync("/api/v1/products/import/confirm", mixed));
@@ -148,7 +151,7 @@ public sealed partial class LiteFlowTests
         var ledger = await Data(await c.GetAsync($"/api/v1/movements?productId={created.GetProperty("id").GetGuid()}"));
         Assert.Equal(0, ledger.GetProperty("total").GetInt32());
         var zeroId = created.GetProperty("id").GetGuid();
-        await Data(await c.PutAsJsonAsync($"/api/v1/products/{zeroId}", new { name, productSpecification = "", rawMaterialSpecification = "", unit = "个", note = "保留", isActive = false, version = created.GetProperty("version").GetInt64() }));
+        await Data(await c.PutAsJsonAsync($"/api/v1/products/{zeroId}", new { name, productSpecification = "", rawMaterialSpecification = "", unit = "个", note = "保留", isActive = false, version = created.GetProperty("version").GetInt64(), confirmChanges = true }));
         var inactiveSkip = await Data(await c.PostAsJsonAsync("/api/v1/products/import/confirm", new ProductImportEndpoints.ImportRequest(Guid.NewGuid(), "inactive.xlsx", [zero with { CurrentQuantity = -10, AllowEmptySpecifications = false }])));
         Assert.Equal(1, inactiveSkip.GetProperty("skipped").GetInt32());
         var inactive = (await Data(await c.GetAsync("/api/v1/products/?includeInactive=true"))).EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == zeroId);

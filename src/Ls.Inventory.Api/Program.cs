@@ -150,8 +150,23 @@ if (initializeOnly || builder.Configuration.GetValue<bool>("DatabaseInitializati
         // Runtime account has no schema-management or deletion privileges.
         await using var grantsConnection = new NpgsqlConnection(migrationConnection.ConnectionString);
         await grantsConnection.OpenAsync();
-        await using var grants = new NpgsqlCommand($"GRANT USAGE ON SCHEMA lite TO {userIdentifier}; GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA lite TO {userIdentifier}; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA lite TO {userIdentifier}; REVOKE UPDATE ON lite.movements, lite.audit_logs FROM {userIdentifier}", grantsConnection);
+        await using var schemaCommand = new NpgsqlCommand("SELECT current_schema()", grantsConnection);
+        var schemaIdentifier = new NpgsqlCommandBuilder().QuoteIdentifier((string)(await schemaCommand.ExecuteScalarAsync())!);
+        await using var grants = new NpgsqlCommand($"""
+            GRANT USAGE ON SCHEMA {schemaIdentifier} TO {userIdentifier};
+            GRANT SELECT, INSERT, UPDATE ON users, login_sessions, products, stocktakes, stocktake_lines TO {userIdentifier};
+            GRANT SELECT, INSERT ON movements, audit_logs, product_histories TO {userIdentifier};
+            REVOKE UPDATE ON movements, audit_logs, product_histories FROM {userIdentifier};
+            """, grantsConnection);
         await grants.ExecuteNonQueryAsync();
+        await using var sequenceCommand = new NpgsqlCommand("""
+            SELECT string_agg(pg_get_serial_sequence(t, 'id'), ', ')
+            FROM (VALUES ('movements'), ('audit_logs'), ('product_histories')) AS tables(t)
+            """, grantsConnection);
+        if (await sequenceCommand.ExecuteScalarAsync() is string sequences) {
+            await using var sequenceGrant = new NpgsqlCommand($"GRANT USAGE, SELECT ON SEQUENCE {sequences} TO {userIdentifier}", grantsConnection);
+            await sequenceGrant.ExecuteNonQueryAsync();
+        }
     }
 }
 if (initializeOnly) {

@@ -16,7 +16,6 @@ const categorySelection = computed<string | number>({
 })
 const categories = computed(() => categoryOptions(products.value))
 const scopedProducts = computed(() => productsInCategory(products.value, category.value))
-const alerts = computed(() => scopedProducts.value.filter(isLowStock))
 const productId = ref(''), kind = ref('Inbound'), quantity = ref<number>(), note = ref(''), busy = ref(false), loading = ref(false)
 const pending = ref<{ requestId: string; productId: string; kind: string; quantity: number; note: string }>()
 const active = computed(() => scopedProducts.value.filter(p => p.isActive))
@@ -99,7 +98,7 @@ onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer) })
 <template><div class="page-shell">
   <PageHeader eyebrow="轻量版" title="库存工作台"><el-button type="primary" @click="load" :loading="loading">刷新数据</el-button></PageHeader>
   <RecentMovementsOverview ref="overviewRef" :products="scopedProducts" :category="category" :refresh-key="historyRefresh" :entry-locked="busy || Boolean(pending)" @entry="openEntry">
-    <template #category-filter><div class="category-filter"><label for="dashboard-category">商品类目</label><el-select id="dashboard-category" v-model="categorySelection" :empty-values="[undefined]" filterable placeholder="全部分类" aria-label="工作台商品类目"><el-option :value="0" label="全部分类" /><el-option value="" label="未分类" /><el-option v-for="item in categories" :key="item" :value="item" :label="item" /></el-select></div></template>
+    <template #category-filter><div class="category-filter"><label for="dashboard-category">商品类目</label><el-select id="dashboard-category" v-model="categorySelection" size="small" :empty-values="[undefined]" filterable placeholder="全部分类" aria-label="工作台商品类目"><el-option :value="0" label="全部分类" /><el-option value="" label="未分类" /><el-option v-for="item in categories" :key="item" :value="item" :label="item" /></el-select></div></template>
     <template #receipt><div v-if="receipt" class="entry-receipt" role="status"><span>已{{receipt.kind === 'Inbound' ? '入库' : '出库'}} · {{receipt.name}} · {{formatQuantity(receipt.quantity)}} {{receipt.unit}} · 本次结存 {{formatQuantity(receipt.quantityAfter)}} {{receipt.unit}}</span><el-button link type="primary" :disabled="busy || Boolean(pending)" @click="viewReceipt">查看今天记录</el-button></div></template>
   </RecentMovementsOverview>
   <el-drawer v-model="entryOpen" :title="'快捷'+(kind === 'Inbound' ? '入库' : '出库')" size="min(620px, 100vw)" :before-close="closeEntry" :close-on-click-modal="false" :close-on-press-escape="!busy && !pending" @opened="focusQuantity">
@@ -121,22 +120,10 @@ onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer) })
     </div></el-form>
     </section>
   </el-drawer>
-  <section class="panel warning-panel" aria-live="polite"><div class="section-title"><h2>库存预警 <span class="warning-count">{{alerts.length}}</span></h2><RouterLink to="/stock-warnings" custom v-slot="{ navigate }"><el-button type="primary" @click="navigate">设置预警值</el-button></RouterLink></div>
-    <div v-if="alerts.length" class="warning-list"><article v-for="p in alerts" :key="p.id" :style="productStyle(p.name)" class="warning-item"><div><strong class="product-name negative">{{p.name}}库存告急，请及时处理</strong><p><span class="product-spec">{{p.productSpecification || '无产品规格'}} · {{p.rawMaterialSpecification || '无原料规格'}} · </span><b class="product-unit">{{p.unit}}</b><span v-if="p.note" class="product-note"> · {{p.note}}</span></p><div class="warning-quantities"><span>当前库存 <b>{{formatQuantity(p.quantity)}}</b></span><span>预警值 <b>{{formatQuantity(p.warningQuantity!)}}</b></span></div></div><el-button type="primary" @click="openEntry('Inbound',p.id)" :disabled="Boolean(pending)">去入库</el-button></article></div>
-    <p v-else class="muted no-warning">{{active.some(p=>p.warningQuantity!=null) ? '当前没有低于预警值的商品。' : '尚未设置库存预警值，可按商品设置后在这里查看提醒。'}}</p>
-  </section>
 </div></template>
 <style scoped>
-.category-filter{display:flex;align-items:center;gap:8px;flex:0 1 260px;min-width:200px}.category-filter .el-select{flex:1;min-width:0}.category-filter label{font-weight:600;white-space:nowrap}
+.category-filter{display:flex;align-items:center;gap:6px;flex:0 1 180px;min-width:150px;font-size:13px}.category-filter .el-select{flex:1;min-width:0}.category-filter label{font-weight:600;white-space:nowrap}
 .entry-grid{display:grid;gap:22px}.entry-grid .el-select,.entry-grid .el-input-number{width:100%}.entry-grid .el-form-item{margin-bottom:0;min-width:0}.entry-submit .el-button{width:100%;height:52px;font-size:18px}
 .quick-entry{--product-text-size:18px;--product-unit-size:19px}.entry-grid :deep(.el-form-item__label){font-size:16px}.entry-grid :deep(.el-select__wrapper){min-height:48px}.entry-grid :deep(.el-input__wrapper){min-height:46px;font-size:16px}.entry-kind{display:flex;width:100%}.entry-kind :deep(.el-radio-button){flex:1;min-width:0}.entry-kind :deep(.el-radio-button__inner){display:flex;align-items:center;justify-content:center;width:100%;min-height:54px;padding:14px 24px;font-size:20px;font-weight:700}
-.entry-date{margin:0;color:#34596f;font-weight:600}.entry-description{margin:10px 0 24px;font-size:13px;line-height:1.7}.selected-stock{padding:18px;border-radius:10px;border-left:4px solid var(--product-accent);overflow-wrap:anywhere}.selected-stock>p{margin:7px 0}.stock-preview{display:flex;align-items:center;gap:22px;border-top:1px solid #dce7ee;margin-top:15px;padding-top:15px}.stock-preview>div{flex:1;min-width:0}.stock-preview span{font-size:12px;color:#516b7c}.stock-preview strong{display:block;font-size:27px;overflow-wrap:anywhere;margin-top:6px}.stock-arrow{font-size:22px!important}.entry-receipt{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;background:#edf8f2;border:1px solid #c3e3d0;color:#247256;border-radius:8px;padding:12px 15px;margin-top:18px;font-size:13px;line-height:1.7}.pending-message{background:#fff5e8;color:#955625;padding:12px;border-radius:8px;line-height:1.7;font-size:13px}.warning-count{background:#fff0ed;color:#af4350;border-radius:20px;padding:3px 10px;font-size:15px}
-.warning-list{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.warning-item{padding:22px;border-radius:12px;border:1px solid #e9d6d2;display:flex;align-items:center;justify-content:space-between;gap:18px}
-.warning-item>div{min-width:0}.warning-item strong{font-size:18px;font-weight:800;line-height:1.6}
-.warning-item p{font-size:16px;font-weight:700;margin:10px 0;line-height:1.6}
-.warning-quantities{display:flex;flex-wrap:wrap;gap:12px 26px;color:#3b576a;font-size:16px;font-weight:700}
-.warning-quantities b{font-size:24px;margin-left:8px}.no-warning{margin:0;padding:12px 0}
-@media(max-width:1150px){.warning-list{grid-template-columns:1fr}}
-@media(max-width:650px){.warning-item{align-items:flex-start}.warning-item .el-button{flex-shrink:0}}
+.entry-date{margin:0;color:#34596f;font-weight:600}.entry-description{margin:10px 0 24px;font-size:13px;line-height:1.7}.selected-stock{padding:18px;border-radius:10px;border-left:4px solid var(--product-accent);overflow-wrap:anywhere}.selected-stock>p{margin:7px 0}.stock-preview{display:flex;align-items:center;gap:22px;border-top:1px solid #dce7ee;margin-top:15px;padding-top:15px}.stock-preview>div{flex:1;min-width:0}.stock-preview span{font-size:12px;color:#516b7c}.stock-preview strong{display:block;font-size:27px;overflow-wrap:anywhere;margin-top:6px}.stock-arrow{font-size:22px!important}.entry-receipt{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;background:#edf8f2;border:1px solid #c3e3d0;color:#247256;border-radius:8px;padding:12px 15px;margin-top:18px;font-size:13px;line-height:1.7}.pending-message{background:#fff5e8;color:#955625;padding:12px;border-radius:8px;line-height:1.7;font-size:13px}
 </style>

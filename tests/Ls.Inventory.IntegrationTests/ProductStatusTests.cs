@@ -19,7 +19,7 @@ public sealed partial class LiteFlowTests
             productSpecification = p.GetProperty("productSpecification").GetString(),
             rawMaterialSpecification = p.GetProperty("rawMaterialSpecification").GetString(),
             unit = p.GetProperty("unit").GetString(), note = p.GetProperty("note").GetString(),
-            version = p.GetProperty("version").GetInt64(), isActive
+            version = p.GetProperty("version").GetInt64(), isActive, confirmChanges = true
         }));
     }
 

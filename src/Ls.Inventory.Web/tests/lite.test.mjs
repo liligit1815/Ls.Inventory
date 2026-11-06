@@ -129,18 +129,36 @@ test('stocktake with a hidden changed product cannot submit visible counts',asyn
   assert.equal(calls,0)
 })
 
-function catalogVm(t, initial=[]) {
+function catalogVm(t, initial=[], writes={}) {
   const calls=[], scope=vue.effectScope()
   const {descriptor}=parse(readFileSync(new URL('../src/views/ProductsView.vue',import.meta.url),'utf8'))
   const component=evaluate(compileScript(descriptor,{id:'catalog-status-test'}).content,{
-    vue:{...vue,onMounted(){}},'element-plus':{ElMessage:{error(){}}},
-    '@/api/http':{api:{get:async(url,config)=>{calls.push({url,config});return {data:{data:initial}}}},getErrorMessage:String},
+    vue:{...vue,onMounted(){}},'element-plus':{ElMessage:{error(){},success(){}}},
+    '@/api/http':{api:{...writes,get:async(url,config)=>{calls.push({url,config});return {data:{data:initial}}}},getErrorMessage:String},
     '@/utils/inventory':utils,'@/utils/productColors':colors,'@/components/PageHeader.vue':{},'@/components/ProductImportDialog.vue':{},
+    '@/components/ProductHistoryDialog.vue':{},'@/components/ProductComparison.vue':{},
   }).default
   const vm=scope.run(()=>component.setup({}, {expose(){}}))
   t.after(()=>scope.stop())
   return {vm,calls}
 }
+
+test('catalog reviews complete old and new snapshots and writes only after confirmation',async t=>{
+  const writes=[]
+  const {vm}=catalogVm(t,[],{put:async(url,body)=>writes.push({url,body})})
+  const product={...vm.form,id:'p1',code:'A1',name:'旧商品',quantity:9,version:3}
+  vm.edit(product)
+  Object.assign(vm.form,{name:' 新商品 ',productSpecification:'大号',rawMaterialSpecification:'钢',unit:'件',note:'调规格'})
+  vm.review()
+  assert.equal(vm.reviewing.value,true);assert.equal(vm.original.value.name,'旧商品')
+  assert.equal(vm.pending.value.name,'新商品');assert.equal(vm.pending.value.quantity,9)
+  vm.reviewing.value=false;await vm.save()
+  assert.equal(writes.length,0);assert.equal(vm.form.unit,'件')
+  vm.review();await vm.save()
+  assert.equal(writes.length,1);assert.equal(writes[0].body.confirmChanges,true);assert.equal(writes[0].body.version,3)
+  assert.equal(writes[0].body.productSpecification,'大号');assert.equal(writes[0].body.rawMaterialSpecification,'钢')
+  assert.equal(vm.dialog.value,false)
+})
 
 test('catalog loads disabled products and puts them after all active products across pages',async t=>{
   const active=Array.from({length:31},(_,i)=>({...importRow(),id:'a'+i,code:'A'+i,category:'纸杯',name:'纸杯'+i,isActive:true}))
@@ -360,7 +378,6 @@ test('workbench picker keeps compact labels and drawer shows complete product id
   assert.ok(source.includes(':filter-method="filterProducts"'))
   assert.ok(!source.includes('备注：'));assert.ok(!source.includes('选商品、填数量，确认或按回车即可完成出入库。'))
   assert.ok(source.includes('<b class="product-unit">{{p.unit}}</b>'));assert.ok(source.includes('selected-stock'))
-  assert.ok(source.includes('<el-button type="primary" @click="navigate">设置预警值'))
   assert.ok(!source.includes('formatQuantity(p.quantity)}} {{p.unit}}'))
 })
 test('stock warning is strictly below threshold, excludes disabled and unset rules',()=>{
@@ -376,10 +393,10 @@ test('product colors are deterministic and black-gold takes precedence over gold
   assert.equal(colors.productRowStyle({row:{name:'蓝色'}}).backgroundColor,colors.productRowStyle({row:{row:{name:'蓝色'}}}).backgroundColor)
   assert.equal(colors.productRowStyle({row:{productName:'蓝色'}}).backgroundColor,colors.productStyle('蓝色').backgroundColor)
 })
-test('dashboard removes old overview and ledger, and shows selected stock plus warnings',()=>{
+test('dashboard removes old overview and ledger, and shows selected stock without a separate warning panel',()=>{
   const source=readFileSync(new URL('../src/views/DashboardView.vue',import.meta.url),'utf8')
   for(const removed of ['每种商品的当前库存','最近出入库与盘库流水','确认后即时过账，无需审批'])assert.ok(!source.includes(removed))
-  assert.ok(source.includes('selected.quantity'));assert.ok(source.includes('库存告急，请及时处理'));assert.ok(source.includes('entry-submit'))
+  assert.ok(source.includes('selected.quantity'));assert.ok(!source.includes('warning-panel'));assert.ok(source.includes('entry-submit'))
 })
 test('audit log UI does not expose raw details or trace identifiers',()=>{
   const source=readFileSync(new URL('../src/views/AuditLogsView.vue',import.meta.url),'utf8')
@@ -446,11 +463,29 @@ test('batch warnings freeze duplicate submits and clear rules with null',async()
 })
 
 const overview=evaluate(readFileSync(new URL('../src/utils/movementOverview.ts',import.meta.url),'utf8'))
+test('workbench groups names and sorts the number in each unit before specifications',()=>{
+  const product=(id,unit,extra={})=>({...importRow(),id,name:'166/320榴莲盒蓝色不热封',unit,...extra})
+  const rows=[
+    product('2000','2000/箱',{productSpecification:'1.0'}),product('1000','1000/箱',{productSpecification:'9.0'}),
+    product('100','100/箱'),product('20','20/箱'),product('500','５００／箱'),
+    product('250','每箱 250 个'),product('1500','1,500/箱'),product('plain','箱'),
+    product('other','1/箱',{name:'166/320榴莲盒金色不热封'}),
+  ]
+  const ids=rows.map(p=>p.id)
+  const sorted=overview.overviewProducts(rows,[],[],false)
+  assert.deepEqual(Array.from(sorted.filter(p=>p.name===rows[0].name),p=>p.id),['20','100','250','500','1000','1500','2000','plain'])
+  const positions=Array.from(sorted,(p,i)=>p.name===rows[0].name?i:-1).filter(i=>i>=0)
+  assert.equal(positions.at(-1)-positions[0],7)
+  assert.deepEqual(rows.map(p=>p.id),ids)
+  const entries=[{productId:'2000'},{productId:'1000'}]
+  assert.deepEqual(Array.from(overview.overviewProducts(rows,entries,[],true),p=>p.id),['1000','2000'])
+})
+
 function recentHistoryVm(get, overrides={}) {
   const {descriptor}=parse(readFileSync(new URL('../src/components/RecentMovementsOverview.vue',import.meta.url),'utf8'))
   const component=evaluate(compileScript(descriptor,{id:'recent-history-test'}).content,{
     vue:{...vue,onBeforeUnmount(){}},'@/api/http':{api:{get},getErrorMessage:String},'@/utils/inventory':utils,'@/utils/productColors':colors,'@/utils/movementOverview':overview,'@/components/MovementQuickActions.vue':{},
-  }).default
+  }, {localStorage:overrides.storage}).default
   const props=vue.reactive({products:[],refreshKey:0,...overrides})
   const scope=vue.effectScope()
   const vm=scope.run(()=>component.setup(props,{expose(){},emit:(...args)=>overrides.onEntry?.(...args)}))
@@ -459,15 +494,14 @@ function recentHistoryVm(get, overrides={}) {
 const historyResponse=(overrides={})=>({data:{data:{from:'2026-09-14',to:'2026-09-20',days:7,entries:[],...overrides}}})
 async function flushHistory(){await vue.nextTick();await new Promise(resolve=>setImmediate(resolve))}
 
-test('overview defaults to 7 days and preserves display choices on refresh',async t=>{
+test('overview defaults to 7 days and preserves days and product filters on refresh',async t=>{
   const calls=[]
   const {vm,props,stop}=recentHistoryVm(async(url,config)=>{calls.push({url,...config.params});return historyResponse()})
   t.after(stop);await flushHistory()
-  assert.equal(calls[0].url,'/api/v1/movements/daily');assert.equal(calls[0].days,7);assert.equal(vm.view.value,'calendar')
-  vm.view.value='cards';vm.selectedIds.value=['a'];await flushHistory();assert.equal(calls.length,1)
+  assert.equal(calls[0].url,'/api/v1/movements/daily');assert.equal(calls[0].days,7)
+  vm.selectedIds.value=['a'];await flushHistory();assert.equal(calls.length,1)
   vm.days.value=30;await flushHistory();assert.equal(calls.at(-1).days,30)
-  props.refreshKey++;await flushHistory();assert.equal(calls.length,3);assert.equal(vm.view.value,'cards');assert.deepEqual(Array.from(vm.selectedIds.value),['a'])
-  vm.view.value='calendar';props.refreshKey++;await flushHistory();assert.equal(vm.view.value,'calendar');assert.equal(calls.length,4)
+  props.refreshKey++;await flushHistory();assert.equal(calls.length,3);assert.equal(vm.days.value,30);assert.deepEqual(Array.from(vm.selectedIds.value),['a'])
 })
 
 test('overview ignores late results and errors from previous ranges',async t=>{
@@ -507,20 +541,17 @@ test('calendar dates include empty days, cross months and years, and align Monda
   assert.equal(overview.calendarDates('2024-02-28','2024-03-01').length,3)
 })
 
-test('calendar and daily cards share product-date values and keep mixed units separate',async t=>{
-  const products=[{...importRow(),id:'a',name:'蓝色杯',isActive:true},{...importRow(),id:'b',name:'蓝色杯',unit:'个',isActive:true},{...importRow(),id:'c',name:'无记录商品',isActive:true}]
-  const entries=[{date:'2026-09-20',productId:'a',inbound:100,outbound:30,inboundCount:2,outboundCount:1},{date:'2026-09-20',productId:'b',inbound:50,outbound:0,inboundCount:1,outboundCount:0}]
+test('matrix aligns daily quantities by product id and date including empty days',async t=>{
+  const products=[{...importRow(),id:'a',name:'蓝色杯',quantity:12,isActive:true},{...importRow(),id:'b',name:'蓝色杯',quantity:18,unit:'个',isActive:true},{...importRow(),id:'c',name:'无记录商品',quantity:6,isActive:true}]
+  const entries=[{date:'2026-09-20',productId:'a',inbound:100,outbound:30,inboundCount:2,outboundCount:1},{date:'2026-09-19',productId:'a',inbound:4,outbound:2,inboundCount:1,outboundCount:1},{date:'2026-09-20',productId:'b',inbound:50,outbound:0,inboundCount:1,outboundCount:0}]
   const {vm,stop}=recentHistoryVm(async()=>historyResponse({entries}),{products});t.after(stop);await flushHistory()
-  assert.equal(vm.shownProducts.value.length,3);assert.equal(vm.dates.value.length,7);assert.equal(vm.calendarDays.value[0].items.length,0)
-  assert.equal(vm.index.value.get('2026-09-20').get('a').inbound,100);assert.equal(vm.calendarDays.value[6].items.length,2)
-  assert.equal(vm.counts.value.inbound,3);assert.equal(vm.counts.value.outbound,1)
-  assert.deepEqual(Array.from(vm.summaryDays.value,day=>day.date),Array.from(vm.dates.value));assert.equal(vm.summaryDays.value[6].date,'2026-09-20');assert.equal(vm.summaryDays.value[6].summary.units.length,2)
-  assert.equal(vm.summaryDays.value[0].items.length,0);assert.equal(vm.summaryDays.value[0].summary.inboundCount,0)
-  vm.selectedIds.value=['b'];assert.equal(vm.shownProducts.value[0].unit,'个');assert.equal(vm.calendarDays.value[6].items[0].movement.inbound,50)
-  assert.equal(vm.summaryDays.value[6].summary.units.length,1);assert.equal(vm.summaryDays.value[6].summary.units[0].unit,'个')
-  vm.showDate('2026-09-20');assert.equal(vm.details.value.length,1);assert.equal(vm.detailDate.value,'2026-09-20')
-  vm.selectedIds.value=[];vm.onlyWithActivity.value=false;assert.equal(vm.shownProducts.value.length,3)
-  vm.selectedIds.value=['c'];assert.equal(vm.index.value.get('2026-09-20').get('c'),undefined);assert.equal(vm.calendarDays.value[6].items.length,0)
+  assert.equal(vm.tableRows.value.length,3);assert.equal(vm.dates.value.length,7)
+  const a=vm.tableRows.value.find(r=>r.product.id==='a'),b=vm.tableRows.value.find(r=>r.product.id==='b')
+  assert.equal(a.days[0].movement,undefined);assert.equal(a.days[5].movement.outbound,2);assert.equal(a.days[6].movement.inbound,100)
+  assert.equal(a.product.quantity,12);assert.equal(b.days[6].movement.inbound,50);assert.equal(b.product.quantity,18)
+  vm.selectedIds.value=['b'];assert.equal(vm.tableRows.value[0].product.unit,'个')
+  vm.selectedIds.value=['c'];assert.equal(vm.tableRows.value[0].days.every(day=>!day.movement),true)
+  vm.onlyWithActivity.value=true;assert.equal(vm.tableRows.value.length,0)
 })
 
 test('daily cards total each unit separately and retain negative and zero net changes',()=>{
@@ -570,12 +601,12 @@ test('history entry uses the single filter as a default and explicit product tak
   props.entryLocked=true;vm.startEntry('Inbound');assert.equal(events.length,3)
 })
 
-test('viewing the posted receipt reveals today even when another product was filtered',async t=>{
+test('viewing the posted receipt reveals its product without replacing the chosen day count',async t=>{
   const {vm,stop}=recentHistoryVm(async()=>historyResponse())
   t.after(stop);await flushHistory()
-  vm.view.value='cards';vm.selectedIds.value=['old'];vm.days.value=30
-  vm.focusToday('posted');assert.equal(vm.days.value,1);assert.deepEqual(Array.from(vm.selectedIds.value),['posted'])
-  assert.equal(vm.onlyWithActivity.value,false);assert.equal(vm.view.value,'cards')
+  vm.selectedIds.value=['old'];vm.days.value=30;vm.onlyWithActivity.value=true;vm.page.value=3
+  vm.focusToday('posted');assert.equal(vm.days.value,30);assert.deepEqual(Array.from(vm.selectedIds.value),['posted'])
+  assert.equal(vm.onlyWithActivity.value,false);assert.equal(vm.page.value,1)
 })
 
 
@@ -598,44 +629,74 @@ test('background refresh retains the rendered range until replacement arrives',a
 })
 
 
-test('date overview defaults to the latest day, selects empty dates and preserves date across refresh',async t=>{
+test('matrix opens at today and retains horizontal scroll during a background refresh',async t=>{
   const {vm,props,stop}=recentHistoryVm(async()=>historyResponse())
-  t.after(stop);await flushHistory();assert.equal(vm.detailDate.value,'2026-09-20')
-  vm.showDate('2026-09-18');assert.equal(vm.details.value.length,0)
-  props.refreshKey++;await flushHistory();assert.equal(vm.detailDate.value,'2026-09-18')
-  vm.view.value='cards';await flushHistory();assert.equal(vm.detailDate.value,'2026-09-18')
-  vm.days.value=1;await flushHistory()
+  t.after(stop);await flushHistory()
+  vm.tableScroll.value={scrollWidth:1800,scrollLeft:0,scrollTop:0};await flushHistory()
+  assert.equal(vm.tableScroll.value.scrollLeft,1800)
+  vm.tableScroll.value.scrollLeft=250;props.refreshKey++;await flushHistory()
+  assert.equal(vm.tableScroll.value.scrollLeft,250)
+  vm.scrollToToday();assert.equal(vm.tableScroll.value.scrollLeft,1800)
 })
 
-test('day details paginate independently and filter totals cover the full selected day',async t=>{
+test('matrix paginates the full filtered product list',async t=>{
   const products=Array.from({length:65},(_,i)=>({...importRow(),id:'p'+i,name:'商品'+String(i).padStart(2,'0'),unit:i%2?'个':'箱',isActive:true}))
   const entries=products.map(p=>({date:'2026-09-20',productId:p.id,inbound:10,outbound:2,inboundCount:1,outboundCount:1}))
-  const {vm,stop}=recentHistoryVm(async()=>historyResponse({entries}),{products})
+  const {vm,props,stop}=recentHistoryVm(async()=>historyResponse({entries}),{products})
   t.after(stop);await flushHistory()
-  assert.equal(vm.details.value.length,65);assert.equal(vm.pagedDetails.value.length,30);assert.equal(vm.detailSummary.value.inboundCount,65)
-  assert.equal(vm.detailSummary.value.units.find(u=>u.unit==='箱').inbound,330)
-  assert.equal(vm.counts.value.inbound,65)
-  vm.detailPage.value=3;assert.equal(vm.pagedDetails.value.length,5)
-  vm.selectedIds.value=['p0'];await flushHistory();assert.equal(vm.detailPage.value,1);assert.equal(vm.pagedDetails.value[0].product.id,'p0')
-  vm.selectedIds.value=[];await flushHistory();vm.detailPage.value=3
-  vm.showDate('2026-09-19');assert.equal(vm.detailPage.value,1);assert.equal(vm.pagedDetails.value.length,30);assert.equal(vm.pagedDetails.value[0].movement.inbound,0)
-  vm.onlyWithActivity.value=true;assert.equal(vm.pagedDetails.value.length,0)
+  assert.equal(vm.shownProducts.value.length,65);assert.equal(vm.tableRows.value.length,30)
+  vm.page.value=3;assert.equal(vm.tableRows.value.length,5);assert.equal(vm.tableRows.value[0].product.id,'p60')
+  vm.selectedIds.value=['p0'];await flushHistory();assert.equal(vm.page.value,1);assert.equal(vm.tableRows.value[0].product.id,'p0')
+  vm.selectedIds.value=[];await flushHistory();vm.page.value=3
+  props.products=products.slice(0,31);await flushHistory();assert.equal(vm.page.value,2);assert.equal(vm.tableRows.value.length,1)
 })
 
-test('date selection falls back when the range excludes it and receipt selects today',async t=>{
-  let narrow=false
-  const {vm,props,stop}=recentHistoryVm(async()=>historyResponse(narrow?{from:'2026-09-20',to:'2026-09-20',days:1}:{}))
-  t.after(stop);await flushHistory();vm.showDate('2026-09-14')
-  narrow=true;vm.days.value=1;await flushHistory();assert.equal(vm.detailDate.value,'2026-09-20')
-  vm.detailPage.value=2;vm.focusToday('product');assert.equal(vm.detailDate.value,utils.localDate());assert.equal(vm.detailPage.value,1)
+test('scroll synchronization does not pull an active drag back when a delayed mirrored event arrives',async t=>{
+  const {vm,stop}=recentHistoryVm(async()=>historyResponse());t.after(stop);await flushHistory()
+  vm.tableScroll.value={scrollWidth:1800,clientWidth:900,scrollLeft:0,scrollTop:0}
+  vm.horizontalScroll.value={scrollWidth:1800,clientWidth:900,scrollLeft:0}
+  vm.tableHeaderScroll.value={scrollLeft:0};await flushHistory()
+  vm.horizontalScroll.value.scrollLeft=120;vm.syncHorizontalScroll('bar')
+  assert.equal(vm.tableScroll.value.scrollLeft,120)
+  // The native thumb advances before the table's previous scroll event is delivered.
+  vm.horizontalScroll.value.scrollLeft=180;vm.syncHorizontalScroll('table')
+  assert.equal(vm.horizontalScroll.value.scrollLeft,180)
+  vm.syncHorizontalScroll('table');assert.equal(vm.horizontalScroll.value.scrollLeft,180)
+  vm.syncHorizontalScroll('bar');assert.equal(vm.tableScroll.value.scrollLeft,180)
+  vm.tableScroll.value.scrollLeft=220;vm.syncHorizontalScroll('table')
+  vm.tableScroll.value.scrollLeft=260;vm.syncHorizontalScroll('bar')
+  assert.equal(vm.tableScroll.value.scrollLeft,260)
+  vm.syncHorizontalScroll('table');assert.equal(vm.horizontalScroll.value.scrollLeft,260)
+  assert.equal(vm.tableHeaderScroll.value.scrollLeft,260)
 })
 
-test('full product identity is available on click and entry retains selected date',async t=>{
+test('resize measurement cannot override a scroll made while its layout update is pending',async t=>{
+  const {vm,stop}=recentHistoryVm(async()=>historyResponse());t.after(stop);await flushHistory()
+  vm.tableScroll.value={scrollWidth:1800,clientWidth:900,scrollLeft:0,scrollTop:0,closest:()=>null}
+  vm.horizontalScroll.value={scrollWidth:1800,clientWidth:900,scrollLeft:0}
+  await flushHistory();vm.scrollToToday()
+  const measuring=vm.measureTable()
+  vm.horizontalScroll.value.scrollLeft=140;vm.syncHorizontalScroll('bar')
+  await measuring
+  assert.equal(vm.tableScroll.value.scrollLeft,140)
+  assert.equal(vm.horizontalScroll.value.scrollLeft,140)
+})
+
+test('matrix low-stock status follows current stock and existing strict warning rules',async t=>{
+  const product={...importRow(),id:'a',isActive:true,quantity:4,warningQuantity:5}
+  const {vm,props,stop}=recentHistoryVm(async()=>historyResponse(),{products:[product]})
+  t.after(stop);await flushHistory();assert.equal(vm.tableRows.value[0].lowStock,true)
+  props.products[0].quantity=5;assert.equal(vm.tableRows.value[0].lowStock,false)
+  props.products[0].quantity=0;props.products[0].warningQuantity=null;assert.equal(vm.tableRows.value[0].lowStock,false)
+  props.products[0].warningQuantity=5;props.products[0].isActive=false;assert.equal(vm.tableRows.value[0].lowStock,false)
+})
+
+test('full product identity is available on click and entry retains the displayed range',async t=>{
   const product={...importRow(),id:'a',name:'很长的商品名称',note:'完整的商品备注',quantity:25,isActive:true}
   const events=[];const {vm,stop}=recentHistoryVm(async()=>historyResponse(),{products:[product],onEntry:(...args)=>events.push(args)})
-  t.after(stop);await flushHistory();vm.showDate('2026-09-19');vm.showProduct(product)
+  t.after(stop);await flushHistory();vm.showProduct(product)
   assert.equal(vm.productDetailOpen.value,true);assert.equal(vm.detailProduct.value.note,product.note)
-  vm.startEntry('Inbound',product.id);assert.equal(vm.productDetailOpen.value,false);assert.equal(vm.detailDate.value,'2026-09-19')
+  vm.startEntry('Inbound',product.id);assert.equal(vm.productDetailOpen.value,false);assert.equal(vm.days.value,7)
   assert.deepEqual(events[0],['entry','Inbound','a'])
 })
 
@@ -653,34 +714,32 @@ test('category switch clears product narrowing and queries the selected category
   const calls=[]
   const {vm,props,stop}=recentHistoryVm(async(url,config)=>{calls.push(config.params);return historyResponse()}, {category:'食品',products:[{...importRow(),id:'a',category:'食品'}]})
   t.after(stop);await flushHistory()
-  assert.equal(vm.onlyWithActivity.value,false);assert.equal(vm.details.value.length,1);assert.equal(vm.details.value[0].movement.inbound,0)
-  vm.selectedIds.value=['a'];vm.onlyWithActivity.value=true;vm.detailPage.value=2
+  assert.equal(vm.onlyWithActivity.value,false);assert.equal(vm.tableRows.value.length,1);assert.equal(vm.tableRows.value[0].days[0].movement,undefined)
+  vm.selectedIds.value=['a'];vm.onlyWithActivity.value=true;vm.page.value=2
   props.category='日用品';props.products=[{...importRow(),id:'b',category:'日用品'}];await flushHistory()
-  assert.equal(calls.at(-1).category,'日用品');assert.equal(vm.selectedIds.value.length,0);assert.equal(vm.onlyWithActivity.value,false);assert.equal(vm.detailPage.value,1)
-  assert.equal(vm.details.value[0].product.id,'b')
+  assert.equal(calls.at(-1).category,'日用品');assert.equal(vm.selectedIds.value.length,0);assert.equal(vm.onlyWithActivity.value,false);assert.equal(vm.page.value,1)
+  assert.equal(vm.tableRows.value[0].product.id,'b')
   props.category='';await flushHistory();assert.equal(calls.at(-1).category,'')
   props.category=null;await flushHistory();assert.equal(calls.at(-1).category,undefined)
 })
 
-test('explicit date ranges are sent together and invalid ranges never query',async t=>{
-  const calls=[]
-  const {vm,stop}=recentHistoryVm(async(url,config)=>{calls.push(config.params);return historyResponse()})
-  t.after(stop);await flushHistory();vm.customRange.value=true;await flushHistory()
-  assert.equal(calls.length,1);assert.ok(vm.error.value)
-  for(const range of [null,['2026-01-02','2026-01-01'],['2024-01-01','2026-01-01'],['2999-01-01','2999-01-02']]) {
-    vm.dateRange.value=range;await flushHistory();assert.equal(calls.length,1);assert.ok(vm.error.value)
-  }
-  vm.dateRange.value=['2026-01-01','2026-01-02'];await flushHistory()
-  assert.equal(calls.at(-1).from,'2026-01-01');assert.equal(calls.at(-1).to,'2026-01-02');assert.equal(calls.at(-1).days,undefined)
-  vm.setDays(7);await flushHistory();assert.equal(calls.at(-1).days,7);assert.equal(calls.at(-1).from,undefined)
-  vm.customRange.value=true;vm.focusToday('a');assert.equal(vm.customRange.value,false)
+test('display day preference is validated, remembered and always queries through today',async t=>{
+  for(const invalid of [null,'','bad','0','-1','1.5','368','NaN']) assert.equal(overview.readOverviewDays(invalid),7)
+  assert.equal(overview.readOverviewDays('1'),1);assert.equal(overview.readOverviewDays('367'),367)
+  const calls=[],saved=new Map([['ls-inventory:workbench-days','14']])
+  const storage={getItem:key=>saved.get(key),setItem:(key,value)=>saved.set(key,value)}
+  const {vm,stop}=recentHistoryVm(async(url,config)=>{calls.push(config.params);return historyResponse()},{storage})
+  t.after(stop);await flushHistory();assert.equal(vm.days.value,14);assert.equal(calls[0].days,14)
+  vm.setDays(30);await flushHistory();assert.equal(saved.get('ls-inventory:workbench-days'),'30')
+  assert.equal(calls.at(-1).from,undefined);assert.equal(calls.at(-1).to,undefined)
+  vm.days.value=undefined;await flushHistory();assert.equal(saved.get('ls-inventory:workbench-days'),'30')
 })
 
-test('workbench category scopes alerts and quick-entry choices',()=>{
+test('workbench category scopes table products and quick-entry choices',()=>{
   const vm=dashboard(async()=>{})
   vm.products.value=[{...importRow(),id:'a',category:'食品',isActive:true,quantity:1,warningQuantity:5},{...importRow(),id:'b',category:'日用品',isActive:true,quantity:1,warningQuantity:5}]
-  vm.category.value='食品';assert.equal(vm.alerts.value.length,1);assert.equal(vm.options.value[0].id,'a')
-  vm.category.value='';assert.equal(vm.alerts.value.length,0);assert.equal(vm.options.value.length,0)
+  vm.category.value='食品';assert.equal(vm.scopedProducts.value.length,1);assert.equal(vm.options.value[0].id,'a')
+  vm.category.value='';assert.equal(vm.scopedProducts.value.length,0);assert.equal(vm.options.value.length,0)
   vm.categorySelection.value=0;assert.equal(vm.category.value,null);assert.equal(vm.options.value.length,2)
   vm.categorySelection.value='食品';assert.equal(vm.category.value,'食品');assert.equal(vm.options.value.length,1)
 })

@@ -20,7 +20,7 @@ public sealed partial class LiteFlowTests
         await Data(await Move(c, id, "Inbound", 9));
         p = (await Data(await c.GetAsync("/api/v1/products/"))).EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == id);
         var version = p.GetProperty("version").GetInt64();
-        var changed = await Data(await c.PutAsJsonAsync($"/api/v1/products/{id}", new { name, unit = "箱", category = "饮品", version }));
+        var changed = await Data(await c.PutAsJsonAsync($"/api/v1/products/{id}", new { name, unit = "箱", category = "饮品", version, confirmChanges = true }));
         Assert.Equal("饮品", changed.GetProperty("category").GetString());
         Assert.Equal(9, changed.GetProperty("quantity").GetInt32());
         Assert.Equal(version + 1, changed.GetProperty("version").GetInt64());

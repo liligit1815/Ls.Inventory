@@ -5,6 +5,10 @@ export interface Product {
   id: string; code: string; name: string; category: string; productSpecification: string; rawMaterialSpecification: string;
   unit: string; quantity: number; version: number; note: string; isActive: boolean; warningQuantity: number | null
 }
+export type ProductDetails = Omit<Product, 'id' | 'version' | 'quantity'>
+export interface ProductHistory {
+  id: number; changedAt: string; userName: string; quantity: number; before: ProductDetails | null; after: ProductDetails
+}
 export interface Movement { id: number; productId: string; productName: string; unit: string; kind: string; quantityChange: number; quantityAfter: number; note: string; postedAt: string; userName: string }
 export interface Paged<T> { items: T[]; total: number }
 export interface RecentMovements extends Paged<Movement> { from: string; to: string; days: number; inbound: number; outbound: number; inboundCount: number; outboundCount: number }

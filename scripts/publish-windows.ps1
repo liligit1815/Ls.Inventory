@@ -1,5 +1,5 @@
 ﻿param(
-    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.3.1',
+    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.3.3',
     [switch]$UseInstalledDependencies
 )
 $ErrorActionPreference = 'Stop'
@@ -49,6 +49,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $packageRoot 'config'), (Join-Path $packageRoot 'tools') -Force | Out-Null
     Copy-Item -LiteralPath 'deploy/appsettings.Production.example.json' -Destination (Join-Path $packageRoot 'config')
     Copy-Item -LiteralPath 'deploy/Prepare-Update.ps1' -Destination (Join-Path $packageRoot 'tools')
+    Copy-Item -LiteralPath 'deploy/upgrade-0.3.1-to-0.3.2.sql' -Destination (Join-Path $packageRoot 'tools')
     Copy-Item -LiteralPath 'deploy/README-Windows.md' -Destination (Join-Path $packageRoot 'README-Windows.md')
     Copy-Item -LiteralPath 'docs/Windows生产环境安装部署指南.md' -Destination $packageRoot
     [ordered]@{ version=$Version; runtime='win-x64'; selfContained=$true; sourceCommit=$commit; workingTreeDirty=$dirty; builtAtUtc=[DateTime]::UtcNow.ToString('o') } |
